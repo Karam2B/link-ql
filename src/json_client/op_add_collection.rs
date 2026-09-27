@@ -10,7 +10,7 @@ use crate::{
         dynamic_collection::{DynamicCollection, FieldName},
         sqlx_executor::SqlxExecutorData,
     },
-    on_migrate::OnMigrate,
+    operations::operations_expressions_crossover::MigrateExpression,
     sqlx_query_builder::{Expression, StatementBuilder},
 };
 
@@ -32,7 +32,7 @@ where
         for<'q> sqlx::Encode<'q, S> + sqlx::Type<S> + for<'d> sqlx::Decode<'d, S>,
     sqlx::types::Json<Vec<f64>>:
         for<'q> sqlx::Encode<'q, S> + sqlx::Type<S> + for<'d> sqlx::Decode<'d, S>,
-    DynamicCollection<S>: OnMigrate<Statements: Expression<'static, S>>,
+    DynamicCollection<S>: MigrateExpression<Migrate: Expression<'static, S>>,
     for<'a> &'a str: sqlx::ColumnIndex<<S as sqlx::Database>::Row>,
     for<'a> S::Arguments<'a>: IntoArguments<'a, S>,
 {
@@ -49,7 +49,7 @@ where
             }
         }
 
-        let mig = StatementBuilder::<S>::new_no_data(dc.statments()).expect("bug: {}");
+        let mig = StatementBuilder::<S>::new_no_data(dc.migrate()).expect("bug: {}");
 
         let mut conn = this.pool.acquire().await.expect("bug: {}");
 

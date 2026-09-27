@@ -84,37 +84,31 @@ pub mod common_expressions {
         use crate::{
             extentions::common_expressions::Aliased,
             from_row::{
-                FromRowAlias, FromRowData, FromRowError, RowPostAliased, RowPreAliased,
-                RowTwoAliased,
+                FromRowAlias, FromRowData, FromRowError, RowStrAliased,
+                RowNumAliased,
             },
-            sqlx_query_builder::{ManyExpressions, trait_objects::ManyBoxedExpressions},
+            sqlx_query_builder::{Expression, trait_objects::BoxedExpression},
         };
 
         pub trait DynFromRow<R> {
             fn clone_as_box(&self) -> Box<dyn DynFromRow<R> + Send>;
             fn no_alias_2<'r>(&self, row: &'r R) -> Result<Box<dyn Any + Send>, FromRowError>;
-            fn pre_alias_2<'r>(
+            fn str_alias_2<'r>(
                 &self,
-                row: RowPreAliased<'r, R>,
+                row: RowStrAliased<'r, R>,
             ) -> Result<Box<dyn Any + Send>, FromRowError>
             where
                 R: sqlx::Row;
-            fn post_alias_2<'r>(
+            fn num_alias_2<'r>(
                 &self,
-                row: RowPostAliased<'r, R>,
-            ) -> Result<Box<dyn Any + Send>, FromRowError>
-            where
-                R: sqlx::Row;
-            fn two_alias_2<'r>(
-                &self,
-                row: RowTwoAliased<'r, R>,
+                row: RowNumAliased<'r, R>,
             ) -> Result<Box<dyn Any + Send>, FromRowError>
             where
                 R: sqlx::Row;
             fn str_aliased_2(
                 &self,
                 alias: &'static str,
-            ) -> Box<dyn ManyBoxedExpressions<R::Database> + Send>
+            ) -> Box<dyn BoxedExpression<R::Database> + Send>
             where
                 R: sqlx::Row;
         }
@@ -126,12 +120,12 @@ pub mod common_expressions {
             T: for<'r> FromRowAlias<'r, R>,
             T::RData: 'static + Send,
             T::RData: fmt::Debug,
-            T: Aliased<Aliased: Send + for<'q> ManyExpressions<'q, R::Database>>,
+            T: Aliased<Aliased: Send + for<'q> Expression<'q, R::Database>>,
         {
             fn str_aliased_2(
                 &self,
                 alias: &'static str,
-            ) -> Box<dyn ManyBoxedExpressions<<R>::Database> + Send>
+            ) -> Box<dyn BoxedExpression<<R>::Database> + Send>
             where
                 R: sqlx::Row,
             {
@@ -143,16 +137,16 @@ pub mod common_expressions {
             fn no_alias_2<'r>(&self, row: &'r R) -> Result<Box<dyn Any + Send>, FromRowError> {
                 Ok(Box::new(self.no_alias(row)?))
             }
-            fn pre_alias_2<'r>(
+            fn str_alias_2<'r>(
                 &self,
-                row: RowPreAliased<'r, R>,
+                row: RowStrAliased<'r, R>,
             ) -> Result<Box<dyn Any + Send>, FromRowError>
             where
                 R: sqlx::Row,
             {
                 // let type_name = std::any::type_name::<T::RData>();
                 // panic!("type_name: {}", type_name);
-                let s: T::RData = self.pre_alias(row)?;
+                let s: T::RData = self.str_alias(row)?;
                 assert_eq!(
                     "TypeId(0x63cc4f4b1487754c707f72f691c5c420)",
                     format!("{:?}", s.type_id())
@@ -166,23 +160,14 @@ pub mod common_expressions {
 
                 Ok(Box::new(s))
             }
-            fn post_alias_2<'r>(
+            fn num_alias_2<'r>(
                 &self,
-                row: RowPostAliased<'r, R>,
+                row: RowNumAliased<'r, R>,
             ) -> Result<Box<dyn Any + Send>, FromRowError>
             where
                 R: sqlx::Row,
             {
-                Ok(Box::new(self.post_alias(row)?))
-            }
-            fn two_alias_2<'r>(
-                &self,
-                row: RowTwoAliased<'r, R>,
-            ) -> Result<Box<dyn Any + Send>, FromRowError>
-            where
-                R: sqlx::Row,
-            {
-                Ok(Box::new(self.two_alias(row)?))
+                Ok(Box::new(self.num_alias(row)?))
             }
         }
 
@@ -195,34 +180,24 @@ pub mod common_expressions {
                 Ok(Box::new(self.no_alias_2(row)?))
             }
 
-            fn pre_alias(
+            fn str_alias(
                 &self,
-                row: crate::from_row::RowPreAliased<'r, R>,
+                row: crate::from_row::RowStrAliased<'r, R>,
             ) -> Result<Self::RData, FromRowError>
             where
                 R: sqlx::Row,
             {
-                Ok(Box::new(self.pre_alias_2(row)?))
+                Ok(Box::new(self.str_alias_2(row)?))
             }
 
-            fn post_alias(
+            fn num_alias(
                 &self,
-                row: crate::from_row::RowPostAliased<'r, R>,
+                row: crate::from_row::RowNumAliased<'r, R>,
             ) -> Result<Self::RData, FromRowError>
             where
                 R: sqlx::Row,
             {
-                Ok(Box::new(self.post_alias_2(row)?))
-            }
-
-            fn two_alias(
-                &self,
-                row: crate::from_row::RowTwoAliased<'r, R>,
-            ) -> Result<Self::RData, FromRowError>
-            where
-                R: sqlx::Row,
-            {
-                Ok(Box::new(self.two_alias_2(row)?))
+                Ok(Box::new(self.num_alias_2(row)?))
             }
         }
     }
@@ -233,7 +208,7 @@ pub mod common_expressions {
         use sqlx::Database;
 
         use crate::from_row::{
-            FromRowAlias, FromRowData, FromRowError, RowPostAliased, RowPreAliased, RowTwoAliased,
+            FromRowAlias, FromRowData, FromRowError, RowStrAliased, RowNumAliased,
         };
 
         pub trait RawFromRow<S: Database> {
@@ -241,13 +216,13 @@ pub mod common_expressions {
                 &self,
                 row: &'r S::Row,
             ) -> Result<Box<dyn Any + Send>, FromRowError>;
-            fn dyn_pre_alias<'r>(
+            fn dyn_str_alias<'r>(
                 &self,
-                row: RowPreAliased<'r, S::Row>,
+                row: RowStrAliased<'r, S::Row>,
             ) -> Result<Box<dyn Any + Send>, FromRowError>;
-            fn dyn_two_alias<'r>(
+            fn dyn_num_alias<'r>(
                 &self,
-                row: RowTwoAliased<'r, S::Row>,
+                row: RowNumAliased<'r, S::Row>,
             ) -> Result<Box<dyn Any + Send>, FromRowError>;
         }
 
@@ -263,18 +238,18 @@ pub mod common_expressions {
                 Ok(Box::new(self.no_alias(row)?))
             }
 
-            fn dyn_pre_alias<'r>(
+            fn dyn_str_alias<'r>(
                 &self,
-                row: RowPreAliased<'r, <S as Database>::Row>,
+                row: RowStrAliased<'r, <S as Database>::Row>,
             ) -> Result<Box<dyn Any + Send>, FromRowError> {
-                Ok(Box::new(self.pre_alias(row)?))
+                Ok(Box::new(self.str_alias(row)?))
             }
 
-            fn dyn_two_alias<'r>(
+            fn dyn_num_alias<'r>(
                 &self,
-                row: RowTwoAliased<'r, <S as Database>::Row>,
+                row: RowNumAliased<'r, <S as Database>::Row>,
             ) -> Result<Box<dyn Any + Send>, FromRowError> {
-                Ok(Box::new(self.two_alias(row)?))
+                Ok(Box::new(self.num_alias(row)?))
             }
         }
 
@@ -288,25 +263,18 @@ pub mod common_expressions {
                 (&**self).dyn_no_alias(row)
             }
 
-            fn pre_alias(&self, row: RowPreAliased<'r, S::Row>) -> Result<Self::RData, FromRowError>
+            fn str_alias(&self, row: RowStrAliased<'r, S::Row>) -> Result<Self::RData, FromRowError>
             where
                 S::Row: sqlx::prelude::Row,
             {
-                (&**self).dyn_pre_alias(row)
+                (&**self).dyn_str_alias(row)
             }
 
-            fn post_alias(&self, _: RowPostAliased<'r, S::Row>) -> Result<Self::RData, FromRowError>
+            fn num_alias(&self, row: RowNumAliased<'r, S::Row>) -> Result<Self::RData, FromRowError>
             where
                 S::Row: sqlx::prelude::Row,
             {
-                panic!("to be deprecated")
-            }
-
-            fn two_alias(&self, row: RowTwoAliased<'r, S::Row>) -> Result<Self::RData, FromRowError>
-            where
-                S::Row: sqlx::prelude::Row,
-            {
-                (&**self).dyn_two_alias(row)
+                (&**self).dyn_num_alias(row)
             }
         }
     }
@@ -484,9 +452,9 @@ pub mod as_member_helper {
             Ok(row.get(self.0.name()))
         }
 
-        fn pre_alias(
+        fn str_alias(
             &self,
-            row: crate::from_row::RowPreAliased<'r, R>,
+            row: crate::from_row::RowStrAliased<'r, R>,
         ) -> Result<Self::RData, crate::from_row::FromRowError>
         where
             R: sqlx::Row,
@@ -494,19 +462,9 @@ pub mod as_member_helper {
             Ok(row.get(self.0.name()))
         }
 
-        fn post_alias(
+        fn num_alias(
             &self,
-            row: crate::from_row::RowPostAliased<'r, R>,
-        ) -> Result<Self::RData, crate::from_row::FromRowError>
-        where
-            R: sqlx::Row,
-        {
-            Ok(row.get(self.0.name()))
-        }
-
-        fn two_alias(
-            &self,
-            row: crate::from_row::RowTwoAliased<'r, R>,
+            row: crate::from_row::RowNumAliased<'r, R>,
         ) -> Result<Self::RData, crate::from_row::FromRowError>
         where
             R: sqlx::Row,
@@ -541,7 +499,7 @@ pub mod as_member_helper {
 //         database_extention::DatabaseExt,
 //         extentions::CommonExpressions,
 //         query_builder::{
-//             Expression, IsOpExpression, ManyExpressions, OpExpression, SqlSyntax, StatementBuilder,
+//             Expression, OpExpression, SqlSyntax, StatementBuilder,
 //             syntax::comma_join,
 //         },
 //         singlton::Singleton,
@@ -603,12 +561,12 @@ pub mod as_member_helper {
 //         pub names: &'static [&'static str],
 //     }
 
-//     impl IsOpExpression for MembersAliased {
+//     impl OpExpression for MembersAliased {
 //         fn is_op(&self) -> bool {
 //             self.names.len() != 0
 //         }
 //     }
-//     impl<'q, S: DatabaseExt> ManyExpressions<'q, S> for MembersAliased {
+//     impl<'q, S: DatabaseExt> Expression<'q, S> for MembersAliased {
 //         fn expression<
 //             Start: crate::query_builder::SqlSyntax + ?Sized,
 //             Join: crate::query_builder::SqlSyntax + ?Sized,
@@ -669,7 +627,7 @@ pub mod as_member_helper {
 //         pub data: D,
 //     }
 
-//     impl<T> IsOpExpression for UpdateData<T> {
+//     impl<T> OpExpression for UpdateData<T> {
 //         fn is_op(&self) -> bool {
 //             self.names.len() != 0
 //         }
@@ -704,7 +662,7 @@ pub mod as_member_helper {
 //         }
 //     }
 
-//     impl<'q, S, EntireTuple> ManyExpressions<'q, S> for UpdateData<EntireTuple>
+//     impl<'q, S, EntireTuple> Expression<'q, S> for UpdateData<EntireTuple>
 //     where
 //         EntireTuple: 'q + for<'any> Tuple<ToEncode<'q, S, &'any mut StatementBuilder<'q, S>>>,
 //     {
@@ -720,7 +678,7 @@ pub mod as_member_helper {
 //         ) where
 //             S: DatabaseExt,
 //         {
-//             Tuple::on_all_only_mut(self.data, ToEncode(ctx, self.names, PhantomData));
+//             Tuple::own_tuple_mut_spec(self.data, ToEncode(ctx, self.names, PhantomData));
 //         }
 //     }
 // }

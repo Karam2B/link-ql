@@ -5,7 +5,7 @@
 /// examples:
 ///
 /// ```no_run
-///     use claw_ql::singlton::Singleton;
+///     use linked_sql::singleton::Singleton;
 ///
 ///     struct SingletonType;
 ///     impl Singleton for SingletonType {
@@ -16,12 +16,13 @@
 /// ```
 ///
 /// ```no_run
-///     use claw_ql::singlton::Singleton;
+///     use linked_sql::singleton::Singleton;
 ///     use std::sync::LazyLock;
 ///
 ///     struct SingletonType(String);
 ///
-///     static SINGLETON_INSTANCE: SingletonType = LazyLock::new(|| SingletonType(String::from("the one and only instance")));
+///     static SINGLETON_INSTANCE: LazyLock<SingletonType> =
+///         LazyLock::new(|| SingletonType(String::from("the one and only instance")));
 ///
 ///     impl Singleton for SingletonType {
 ///         fn singleton() -> &'static Self {
@@ -32,13 +33,13 @@
 ///
 /// example of how this is used in in this crate
 //
-/// ```no_run
-///     fn collection_basic<T: claw_ql::collections::Collection>(_: T) {}
+/// ```ignore
+///     fn collection_basic<T: linked_sql::collections::Collection>(_: T) {}
 ///
 
 //
 ///     fn main() {
-///         use claw_ql::test_module::{todo, Todo};
+///         use linked_sql::test_module::{todo, Todo};
 ///         use std::marker::PhantomData;
 //
 ///         // these are the same calls because todo is a Singleton
@@ -53,8 +54,11 @@
 /// we can get a `&'static str` in any `T: Collection + Singleton` context.
 ///
 /// ```no_run
+///     use linked_sql::collections::Collection;
+///     use linked_sql::singleton::Singleton;
+///
 ///     fn access_static_str_in_generic_contexts<T: Collection + Singleton>() {
-///         let name: &'static str = T::singleton().table_name();
+///         let _name: &'static str = T::singleton().table_name();
 ///     }
 /// ```
 pub trait Singleton: 'static {
@@ -112,7 +116,7 @@ pub mod impl_default {
     }
 }
 
-#[claw_ql_macros::skip]
+#[linked_sql_macros::skip]
 // unstable interface for ValidateCollection
 pub mod impl_collectinos {
     use super::Singleton;

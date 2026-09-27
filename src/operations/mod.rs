@@ -1,16 +1,10 @@
 use sqlx::Database;
 
-// pub mod delete_by_id;
-// pub mod delete_one;
+pub mod compose_operation;
 pub mod delete;
-// pub mod fetch_linked_records;
 pub mod fetch_many;
 pub mod fetch_one;
 pub mod insert;
-// pub mod insert_one_links;
-// pub mod junction;
-// pub mod v1_insert_one;
-// pub mod insert_one_refactor_link_trait2;
 pub mod update;
 
 pub trait OperationOutput {
@@ -43,6 +37,31 @@ pub mod operations_expressions_crossover {
         fn num_scoped_aliased(&self, num: usize, alias: &'static str) -> Self::NumScopedAliased;
     }
 
+    pub trait IdentifierOnly {
+        type Identifier;
+        fn identifier_only(&self) -> Self::Identifier;
+    }
+
+    pub trait IdentifierColNames {
+        fn col_names(self) -> Vec<String>;
+    }
+
+    impl<const N: usize> IdentifierColNames for [&'static str; N] {
+        fn col_names(self) -> Vec<String> {
+            self.iter().map(|col| (*col).to_string()).collect()
+        }
+    }
+
+    impl<T> IdentifierOnly for T
+    where
+        T: ExpressionsForOperation,
+    {
+        type Identifier = T::Identifier;
+        fn identifier_only(&self) -> Self::Identifier {
+            self.identifier()
+        }
+    }
+
     pub trait OnInsert<Input>: ExpressionsForOperation {
         type InsertExpression;
         fn on_insert(&self, input: Input) -> Self::InsertExpression;
@@ -54,6 +73,8 @@ pub mod operations_expressions_crossover {
         type InsertValue;
         type InsertId;
         fn on_insert(self) -> (Self::InsertId, Self::InsertValue);
+        type UpdateSets;
+        fn on_update(self) -> Self::UpdateSets;
     }
 
     pub trait OnUpdate<Input>: ExpressionsForOperation {
@@ -62,10 +83,16 @@ pub mod operations_expressions_crossover {
     }
 
     pub trait TableExpressions: ExpressionsForOperation {
+        // usually to impl Expression + AsRef<str>
         type SnakeCase;
         type PascalCase;
         fn table_name_snake_case(&self) -> Self::SnakeCase;
         fn table_name_pascal_case(&self) -> Self::PascalCase;
+        type InheritJoin;
+        fn inherit_join(&self) -> Self::InheritJoin;
+    }
+
+    pub trait MigrateExpression {
         type Migrate;
         fn migrate(&self) -> Self::Migrate;
     }
@@ -77,32 +104,99 @@ pub mod operations_expressions_crossover {
     }
 
     mod named_bind_impls {
+        use super::{ExpressionsForOperation, NamedBind, SelfPrescribedInsert, TableExpressions};
+        use crate::sqlx_query_builder::basic_expressions::{Bind, ScopedColumn, UpdatingColumn};
 
-        use crate::{
-            operations::operations_expressions_crossover::{NamedBind, SelfPrescribedInsert},
-            sqlx_query_builder::basic_expressions::{Bind, ScopedColumn},
-        };
-
-        impl<T, N, V> SelfPrescribedInsert for NamedBind<T, N, V> {
+        impl<T, N, V> SelfPrescribedInsert for NamedBind<T, N, V>
+        where
+            T: TableExpressions,
+            N: ExpressionsForOperation,
+        {
             type InsertValue = Bind<V>;
 
-            type InsertId = ScopedColumn<((T,),), ((N,),)>;
+            type InsertId = ScopedColumn<T::PascalCase, N::Identifier>;
 
             fn on_insert(self) -> (Self::InsertId, Self::InsertValue) {
                 (
                     ScopedColumn {
-                        table: ((self.table,),),
-                        col: ((self.name,),),
+                        table: self.table.table_name_pascal_case(),
+                        col: self.name.identifier(),
                     },
                     Bind(self.value),
                 )
             }
+
+            type UpdateSets = UpdatingColumn<N::Identifier, Bind<V>>;
+
+            fn on_update(self) -> Self::UpdateSets {
+                UpdatingColumn {
+                    col: self.name.identifier(),
+                    set: Bind(self.value),
+                }
+            }
+        }
+
+        impl<V> SelfPrescribedInsert for NamedBind<std::sync::Arc<str>, std::sync::Arc<str>, V> {
+            type InsertValue = Bind<V>;
+
+            type InsertId = ScopedColumn<std::sync::Arc<str>, std::sync::Arc<str>>;
+
+            fn on_insert(self) -> (Self::InsertId, Self::InsertValue) {
+                (
+                    ScopedColumn {
+                        table: self.table,
+                        col: self.name,
+                    },
+                    Bind(self.value),
+                )
+            }
+
+            type UpdateSets = UpdatingColumn<std::sync::Arc<str>, Bind<V>>;
+
+            fn on_update(self) -> Self::UpdateSets {
+                UpdatingColumn {
+                    col: self.name,
+                    set: Bind(self.value),
+                }
+            }
         }
     }
 
-    #[claw_ql_macros::skip]
+    mod impl_for_identifier_only {
+        use super::IdentifierOnly;
+        use crate::sqlx_query_builder::sanitize_combinator::Sanitize;
+
+        impl IdentifierOnly for String {
+            type Identifier = String;
+            fn identifier_only(&self) -> Self::Identifier {
+                self.clone()
+            }
+        }
+
+        impl IdentifierOnly for &'static str {
+            type Identifier = &'static str;
+            fn identifier_only(&self) -> Self::Identifier {
+                *self
+            }
+        }
+
+        impl IdentifierOnly for std::sync::Arc<str> {
+            type Identifier = std::sync::Arc<str>;
+            fn identifier_only(&self) -> Self::Identifier {
+                self.clone()
+            }
+        }
+
+        impl<T: Clone> IdentifierOnly for Sanitize<T> {
+            type Identifier = Sanitize<T>;
+            fn identifier_only(&self) -> Self::Identifier {
+                Sanitize(self.0.clone())
+            }
+        }
+    }
+
     mod std_impls {
-        use crate::operations::operations_expressions_crossover::ExpressionsForOperation;
+        use super::{ExpressionsForOperation, SelfPrescribedInsert};
 
         impl ExpressionsForOperation for () {
             type Identifier = ();
@@ -121,16 +215,58 @@ pub mod operations_expressions_crossover {
 
             fn num_scoped_aliased(&self, _: usize, _: &'static str) -> Self::NumScopedAliased {}
         }
+
+        impl<T> ExpressionsForOperation for Vec<T>
+        where
+            T: ExpressionsForOperation,
+        {
+            type Identifier = Vec<T::Identifier>;
+            fn identifier(&self) -> Self::Identifier {
+                self.into_iter().map(|t| t.identifier()).collect()
+            }
+
+            type Scoped = Vec<T::Scoped>;
+
+            fn scoped(&self) -> Self::Scoped {
+                self.into_iter().map(|t| t.scoped()).collect()
+            }
+
+            type ScopedAliased = Vec<T::NumScopedAliased>;
+
+            fn scoped_aliased(&self, alias: &'static str) -> Self::ScopedAliased {
+                self.into_iter()
+                    .enumerate()
+                    .map(|(num, t)| t.num_scoped_aliased(num, alias))
+                    .collect()
+            }
+
+            type NumScopedAliased = Vec<T::NumScopedAliased>;
+
+            fn num_scoped_aliased(&self, _: usize, _: &'static str) -> Self::NumScopedAliased {
+                panic!("should not nest multiple links")
+            }
+        }
+
+        impl SelfPrescribedInsert for () {
+            type InsertValue = ();
+            type InsertId = ();
+            fn on_insert(self) -> (Self::InsertId, Self::InsertValue) {
+                ((), ())
+            }
+            type UpdateSets = ();
+            fn on_update(self) -> Self::UpdateSets {}
+        }
     }
 
     mod impl_for_single_incremintal_int {
+        use super::super::insert_id_mode::AutoGenerate;
+        use super::{ExpressionsForOperation, OnInsert};
         use crate::{
             collections::SingleIncremintalInt,
-            operations::{
-                insert_id_mode::AutoGenerate,
-                operations_expressions_crossover::{ExpressionsForOperation, OnInsert},
+            sqlx_query_builder::{
+                Sanitize,
+                basic_expressions::{AliasedScopedColumn, ScopedColumn},
             },
-            sqlx_query_builder::basic_expressions::{AliasedScopedColumn, ScopedColumn},
         };
 
         macro_rules! impl_expressions_for_operation {
@@ -141,33 +277,33 @@ pub mod operations_expressions_crossover {
                         "id"
                     }
 
-                    type Scoped = ScopedColumn<($type,), (&'static str,)>;
+                    type Scoped = ScopedColumn<$type, &'static str>;
 
                     fn scoped(&self) -> Self::Scoped {
                         ScopedColumn {
-                            table: (self.0.clone(),),
-                            col: ("id",),
+                            table: self.0.clone(),
+                            col: "id",
                         }
                     }
 
                     type ScopedAliased = AliasedScopedColumn<
-                        ($type,),
-                        (&'static str,),
-                        (&'static str, &'static str),
+                        $type,
+                        &'static str,
+                        Sanitize<(&'static str, &'static str)>,
                     >;
 
                     fn scoped_aliased(&self, alias: &'static str) -> Self::ScopedAliased {
                         AliasedScopedColumn {
-                            table: (self.0.clone(),),
-                            column: ("id",),
-                            alias: (alias, "id"),
+                            table: self.0.clone(),
+                            column: "id",
+                            alias: Sanitize((alias, "id")),
                         }
                     }
 
                     type NumScopedAliased = AliasedScopedColumn<
-                        ($type,),
-                        (&'static str,),
-                        (&'static str, usize, &'static str),
+                        $type,
+                        &'static str,
+                        Sanitize<(&'static str, usize, &'static str)>,
                     >;
 
                     fn num_scoped_aliased(
@@ -176,9 +312,9 @@ pub mod operations_expressions_crossover {
                         alias: &'static str,
                     ) -> Self::NumScopedAliased {
                         AliasedScopedColumn {
-                            table: (self.0.clone(),),
-                            column: ("id",),
-                            alias: (alias, num, "id"),
+                            table: self.0.clone(),
+                            column: "id",
+                            alias: Sanitize((alias, num, "id")),
                         }
                     }
                 }
@@ -263,13 +399,17 @@ impl<I, C> From<CollectionOutput<I, C>> for IdOutput<I> {
 }
 
 pub mod by_id {
+    use super::{
+        Operation, OperationOutput, delete::Delete,
+        operations_expressions_crossover::ExpressionsForOperation, update::Update,
+    };
     use crate::{
         collections::{Collection, CollectionId},
-        operations::{
-            Operation, OperationOutput, delete::Delete, insert::ConstraintViolation,
-            operations_expressions_crossover::ExpressionsForOperation, update::Update,
+        sqlx_query_builder::{
+            Join,
+            basic_expressions::{Bind, ColumnEqual},
+            combinators::Nest,
         },
-        sqlx_query_builder::basic_expressions::{ColumnEqual, ManyFlat},
     };
 
     #[allow(type_alias_bounds)]
@@ -278,9 +418,14 @@ pub mod by_id {
     where
         C: Collection,
         C::Id: ExpressionsForOperation,
-    = ManyFlat<(
-        ColumnEqual<<C::Id as ExpressionsForOperation>::Scoped, <C::Id as CollectionId>::IdData>,
-        W,
+    = Join<(
+        Nest<
+            ColumnEqual<
+                <C::Id as ExpressionsForOperation>::Scoped,
+                Bind<<C::Id as CollectionId>::IdData>,
+            >,
+        >,
+        Nest<W>,
     )>;
 
     #[doc(hidden)]
@@ -293,13 +438,17 @@ pub mod by_id {
         C: Collection,
         C::Id: ExpressionsForOperation,
     {
-        ManyFlat((
-            ColumnEqual {
-                col: base.id().scoped(),
-                eq: id,
-            },
-            wheres,
-        ))
+        Join {
+            start: "",
+            separator: " AND ",
+            items: (
+                Nest(ColumnEqual {
+                    col: base.id().scoped(),
+                    eq: Bind(id),
+                }),
+                Nest(wheres),
+            ),
+        }
     }
 
     pub struct OperationById<OgOperation, Id> {
@@ -312,14 +461,14 @@ pub mod by_id {
         fn transform_operation(self, id: Id) -> Self::TransformedOperation;
     }
 
-    impl<Base, Partial, Wheres, Links> ExtendById<<Base::Id as CollectionId>::IdData>
-        for Update<Base, Partial, Wheres, Links>
+    impl<Base, Partial, Wheres, Links, Infalibility> ExtendById<<Base::Id as CollectionId>::IdData>
+        for Update<Base, Partial, Wheres, Links, Infalibility>
     where
         Base: Collection,
         Base::Id: ExpressionsForOperation,
     {
         type TransformedOperation =
-            Update<Base, Partial, ExtendExpressionByIdEqualTo<Wheres, Base>, Links>;
+            Update<Base, Partial, ExtendExpressionByIdEqualTo<Wheres, Base>, Links, Infalibility>;
 
         fn transform_operation(
             self,
@@ -330,6 +479,7 @@ pub mod by_id {
                 base: self.base,
                 partial: self.partial,
                 links: self.links,
+                infalibility: self.infalibility,
             }
         }
     }
@@ -445,33 +595,36 @@ pub mod by_id {
         }
     }
 
-    pub struct UpdateById<Base: Collection, Partial, Wheres, Links> {
+    pub struct UpdateById<Base: Collection, Partial, Wheres, Links, Infalibility> {
         pub base: Base,
         pub id: <Base::Id as CollectionId>::IdData,
         pub partial: Partial,
         pub wheres: Wheres,
         pub links: Links,
+        pub infalibility: Infalibility,
     }
 
-    impl<T, Base: Collection, Partial, Wheres, Links> OperationOutput
-        for UpdateById<Base, Partial, Wheres, Links>
+    impl<T, Base: Collection, Partial, Wheres, Links, Infalibility> OperationOutput
+        for UpdateById<Base, Partial, Wheres, Links, Infalibility>
     where
-        Update<Base, Partial, ExtendExpressionByIdEqualTo<Wheres, Base>, Links>:
-            OperationOutput<Output = Result<Vec<T>, ConstraintViolation>>,
+        Update<Base, Partial, ExtendExpressionByIdEqualTo<Wheres, Base>, Links, Infalibility>:
+            OperationOutput<Output = Vec<T>>,
         Base::Id: ExpressionsForOperation,
     {
-        type Output = Result<Option<T>, ConstraintViolation>;
+        type Output = Option<T>;
     }
 
-    impl<S, T, Base, Partial, Wheres, Links> Operation<S> for UpdateById<Base, Partial, Wheres, Links>
+    impl<S, T, Base, Partial, Wheres, Links, Infalibility> Operation<S>
+        for UpdateById<Base, Partial, Wheres, Links, Infalibility>
     where
+        Infalibility: Send,
         Base: Send + Collection,
         Partial: Send,
         Wheres: Send,
         Links: Send,
         T: Send,
-        Update<Base, Partial, ExtendExpressionByIdEqualTo<Wheres, Base>, Links>:
-            Operation<S, Output = Result<Vec<T>, ConstraintViolation>>,
+        Update<Base, Partial, ExtendExpressionByIdEqualTo<Wheres, Base>, Links, Infalibility>:
+            Operation<S, Output = Vec<T>>,
         <Base::Id as CollectionId>::IdData: Send,
         Base::Id: ExpressionsForOperation,
     {
@@ -488,11 +641,11 @@ pub mod by_id {
                     wheres: extend_expression_by_id_equal_to(self.wheres, &self.base, self.id),
                     base: self.base,
                     partial: self.partial,
-
                     links: self.links,
+                    infalibility: self.infalibility,
                 }
                 .exec_operation(pool)
-                .await?;
+                .await;
 
                 let last = result.pop();
 
@@ -500,15 +653,15 @@ pub mod by_id {
                     panic!("made an operation on multiple records!")
                 }
 
-                Ok(last)
+                last
             }
         }
     }
     #[cfg(test)]
     mod test_update {
+        use super::super::insert::AbortOperation;
+        use super::{Operation, UpdateById};
         use crate::connect_in_memory::ConnectInMemory;
-        use crate::operations::Operation;
-        use crate::operations::by_id::UpdateById;
         use crate::test_module::TodoHandler;
         use crate::test_module::TodoPartial;
         use crate::update_mod::Update;
@@ -525,7 +678,7 @@ pub mod by_id {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
                 done BOOLEAN NOT NULL,
-                description TEXT,
+                description TEXT
             );
 
             INSERT INTO Todo (id, title, done, description) VALUES 
@@ -550,6 +703,7 @@ pub mod by_id {
                     },
                     wheres: (),
                     links: (),
+                    infalibility: AbortOperation,
                 },
                 &mut pool,
             )
@@ -561,25 +715,24 @@ pub mod by_id {
                 .await
                 .unwrap();
 
-            if rows.len() != 2 {
+            if rows.len() != 3 {
                 panic!("did not update one row");
             };
 
             let first: String = rows[0].get("title");
-            let third: String = rows[1].get("title");
+            let second: String = rows[1].get("title");
+            let third: String = rows[2].get("title");
 
             pretty_assertions::assert_eq!(first, "first_todo".to_string());
+            pretty_assertions::assert_eq!(second, "new_title".to_string());
             pretty_assertions::assert_eq!(third, "third_todo".to_string());
         }
     }
 
     #[cfg(test)]
     mod test {
-        use crate::{
-            connect_in_memory::ConnectInMemory,
-            operations::{Operation, by_id::DeleteById},
-            test_module::TodoHandler,
-        };
+        use super::{DeleteById, Operation};
+        use crate::{connect_in_memory::ConnectInMemory, test_module::TodoHandler};
         use sqlx::{Row, Sqlite};
 
         #[tokio::test]
@@ -592,7 +745,7 @@ pub mod by_id {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
                 done BOOLEAN NOT NULL,
-                description TEXT,
+                description TEXT
             );
 
             INSERT INTO Todo (id, title, done, description) VALUES 
@@ -637,10 +790,8 @@ pub mod by_id {
 }
 
 mod gen_serde_impls {
-    use crate::{
-        gen_serde::{ObjectEncoding, Serialize},
-        operations::{LinkedOutput, ManyLinkOutput, fetch_many::ManyOutput},
-    };
+    use super::{LinkedOutput, ManyLinkOutput, fetch_many::ManyOutput};
+    use crate::gen_serde::{ObjectEncoding, Serialize};
 
     impl<F, I, C, L> Serialize<F> for LinkedOutput<I, C, L>
     where
@@ -689,7 +840,7 @@ mod gen_serde_impls {
 }
 
 pub mod on_one_record {
-    use crate::operations::{Operation, OperationOutput};
+    use super::{Operation, OperationOutput};
 
     pub struct OnOneRecord<Operation> {
         pub operation: Operation,
@@ -728,11 +879,13 @@ pub mod on_one_record {
 
     #[cfg(test)]
     mod test {
-        use crate::connect_in_memory::ConnectInMemory;
-        use crate::operations::Operation;
-        use crate::operations::delete::Delete;
-        use crate::operations::on_one_record::OnOneRecord;
-        use crate::test_module::TodoHandler;
+        use super::super::delete::Delete;
+        use super::{OnOneRecord, Operation};
+        use crate::{
+            connect_in_memory::ConnectInMemory,
+            sqlx_query_builder::basic_expressions::{Bind, ColumnEqual, ScopedColumn},
+            test_module::TodoHandler,
+        };
         use sqlx::{Connection, Sqlite};
 
         #[tokio::test]
@@ -745,7 +898,7 @@ pub mod on_one_record {
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     title TEXT NOT NULL,
                     done BOOLEAN NOT NULL,
-                    description TEXT,
+                    description TEXT
                 );
 
                 INSERT INTO Todo (id, title, done, description) VALUES 
@@ -765,7 +918,13 @@ pub mod on_one_record {
                     operation: Delete {
                         base: TodoHandler,
                         links: (),
-                        wheres: (),
+                        wheres: ColumnEqual {
+                            col: ScopedColumn {
+                                table: "Todo",
+                                col: "id",
+                            },
+                            eq: Bind(2),
+                        },
                     },
                 },
                 tx.as_mut(),
@@ -779,7 +938,7 @@ pub mod on_one_record {
 }
 
 mod std_impls {
-    use crate::operations::{Operation, OperationOutput};
+    use super::{Operation, OperationOutput};
     use sqlx::Database;
 
     impl<T> OperationOutput for Vec<T>
@@ -814,10 +973,29 @@ mod std_impls {
             ()
         }
     }
+
+    impl<T: OperationOutput> OperationOutput for Option<T> {
+        type Output = Option<T::Output>;
+    }
+
+    impl<S, T> Operation<S> for Option<T>
+    where
+        T: Operation<S, Output: Send> + Send,
+    {
+        async fn exec_operation(self, pool: &mut S::Connection) -> Self::Output
+        where
+            S: sqlx::Database,
+        {
+            match self {
+                Some(operation) => Some(operation.exec_operation(pool).await),
+                None => None,
+            }
+        }
+    }
 }
 
 pub mod boxed_operation {
-    use crate::operations::{Operation, OperationOutput};
+    use super::{Operation, OperationOutput};
     use futures::{Future, FutureExt};
     use sqlx::Database;
     use std::{any::Any, pin::Pin};
@@ -864,14 +1042,11 @@ pub mod boxed_operation {
 }
 
 pub mod execute_expression {
+    use super::{Operation, OperationOutput};
     use crate::database_extention::DatabaseExt;
     use crate::execute::Executable;
     use crate::fix_executor::ExecutorTrait;
-    use crate::operations::OperationOutput;
-    use crate::{
-        operations::Operation,
-        sqlx_query_builder::{Expression, StatementBuilder},
-    };
+    use crate::sqlx_query_builder::{Expression, StatementBuilder};
     use sqlx::Database;
 
     pub struct ExpressionAsOperation<E>(pub E);
@@ -904,6 +1079,39 @@ pub mod execute_expression {
             )
             .await
             .unwrap();
+        }
+    }
+}
+
+pub mod map_operation {
+    use sqlx::Database;
+
+    use super::{Operation, OperationOutput};
+
+    pub struct MapOperation<Op, Result>
+    where
+        Op: OperationOutput,
+    {
+        pub operation: Op,
+        pub map_fn: fn(<Op as OperationOutput>::Output) -> Result,
+    }
+
+    impl<Operation, Result> OperationOutput for MapOperation<Operation, Result>
+    where
+        Operation: OperationOutput,
+    {
+        type Output = Result;
+    }
+
+    impl<Op, Result, S> Operation<S> for MapOperation<Op, Result>
+    where
+        S: Database,
+        Op: Operation<S, Output: Send> + Send,
+        Result: Send,
+    {
+        async fn exec_operation(self, pool: &mut S::Connection) -> Self::Output {
+            let output = self.operation.exec_operation(pool).await;
+            (self.map_fn)(output)
         }
     }
 }

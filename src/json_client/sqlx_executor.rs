@@ -4,7 +4,9 @@ use crate::json_client::client_interface::{
 };
 use crate::json_client::dynamic_collection::DynamicCollection;
 use crate::{
-    database_extention::DatabaseExt, on_migrate::OnMigrate, sqlx_query_builder::Expression,
+    database_extention::DatabaseExt,
+    operations::operations_expressions_crossover::MigrateExpression,
+    sqlx_query_builder::Expression,
 };
 use sqlx::{IntoArguments, Pool, Sqlite};
 use std::collections::HashSet;
@@ -38,7 +40,7 @@ where
 }
 #[derive(Default, Debug)]
 pub struct LinkInformations {
-    pub optional_to_many: HashSet<FromTo>,
+    pub one_to_many: HashSet<FromTo>,
     pub many_to_many: HashSet<FromTo>,
     pub timestamped: HashSet<Arc<str>>,
 }
@@ -56,7 +58,7 @@ impl Client {
         bool: for<'d> sqlx::Decode<'d, S> + sqlx::Type<S> + for<'q> sqlx::Encode<'q, S>,
         std::string::String:
             sqlx::Type<S> + for<'q> sqlx::Encode<'q, S> + for<'d> sqlx::Decode<'d, S>,
-        DynamicCollection<S>: OnMigrate<Statements: Expression<'static, S>>,
+        DynamicCollection<S>: MigrateExpression<Migrate: Expression<'static, S>>,
         for<'a> S::Arguments<'a>: IntoArguments<'a, S>,
     {
         let (sender, reciever) = tokio_mpsc::unbounded_channel::<(

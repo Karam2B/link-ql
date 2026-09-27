@@ -5,12 +5,10 @@ use sqlx::ColumnIndex;
 use crate::{
     collections::Collection,
     database_extention::DatabaseExt,
-    expressions::ColumnEqual,
-    extentions::common_expressions::Scoped,
     fix_executor::ExecutorTrait,
     from_row::FromRowAlias,
     json_client::{
-        DynManyToMany, DynOptionalToMany,
+        DynManyToMany, DynOneToMany,
         client_interface::{DeleteOneError, DeleteOneInput, DeleteOneOutput, SupportedDeleteLink},
         dynamic_collection::{CollectionToSerialize, DynamicCollection},
         op_delete_one_trait_extension::{JsonDeleteOneLink, JsonDeleteOneToConsume},
@@ -19,12 +17,14 @@ use crate::{
     links::{
         DefaultRelationKey,
         relation_many_to_many::{DeleteManyToManyLinked, ManyToMany},
-        relation_optional_to_many::{DeleteOptionalToManyLinked, OptionalToMany},
+        relation_one_to_many::OneToMany,
     },
     operations::{
         Operation,
         delete::{Delete, DeleteLink, DeleteLinkSplit},
+        operations_expressions_crossover::ExpressionsForOperation,
     },
+    sqlx_query_builder::basic_expressions::{Bind, ColumnEqual},
 };
 
 type DynCollection<S> = Arc<DynamicCollection<S>>;
@@ -38,20 +38,11 @@ where
     for<'a> &'a str: sqlx::ColumnIndex<<S as sqlx::Database>::Row>,
     S: sqlx::Database + DatabaseExt + ExecutorTrait + Send + Sync + 'static,
     DynCollection<S>: for<'r> FromRowAlias<'r, S::Row, RData = CollectionToSerialize>,
-    DynOptionalToMany<S>: DeleteLinkSplit<
+    DynOneToMany<S>: DeleteLinkSplit<
             InitSplitForPreOp: Send + 'static,
             Link: JsonDeleteOneLink<S>
                       + DeleteLink<InitSplitForWheres: Send + 'static, PreOpSplitTake: Send + 'static>,
         >,
-    DeleteOptionalToManyLinked<DefaultRelationKey, DynCollection<S>, DynCollection<S>>:
-        DeleteLinkSplit<
-                InitSplitForPreOp: Send + 'static,
-                Link: JsonDeleteOneLink<S>
-                          + DeleteLink<
-                    InitSplitForWheres: Send + 'static,
-                    PreOpSplitTake: Send + 'static,
-                >,
-            >,
     DeleteManyToManyLinked<DefaultRelationKey, DynCollection<S>, DynCollection<S>>: DeleteLinkSplit<
             InitSplitForPreOp: Send + 'static,
             Link: JsonDeleteOneLink<S>
@@ -77,7 +68,7 @@ where
 
         for link in input.links {
             match link {
-                SupportedDeleteLink::OptionalToMany { to } => {
+                SupportedDeleteLink::OneToMany { to } => {
                     let to_gaurd = cols
                         .get(to.as_str())
                         .ok_or(DeleteOneError::InvalidLink)?
@@ -85,16 +76,11 @@ where
                         .await;
                     let to = to_gaurd.clone();
                     all_gaurds.push(to_gaurd);
-                    links.push(JsonDeleteOneToConsume::from_split(
-                        DeleteOptionalToManyLinked {
-                            relation: OptionalToMany {
-                                fk_unique_id: DefaultRelationKey,
-                                from: base.clone(),
-                                to,
-                            },
-                            from_id: input.id,
-                        },
-                    ))
+                    links.push(JsonDeleteOneToConsume::from_split(OneToMany {
+                        fk_unique_id: DefaultRelationKey,
+                        from: base.clone(),
+                        to,
+                    }))
                 }
                 SupportedDeleteLink::ManyToMany { to } => {
                     let to_gaurd = cols
@@ -133,7 +119,7 @@ where
                 base: Arc::clone(&base),
                 wheres: ColumnEqual {
                     col: base.id().scoped(),
-                    eq: input.id,
+                    eq: Bind(input.id),
                 },
                 links,
             },

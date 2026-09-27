@@ -11,9 +11,17 @@ pub trait AsTuple {
     fn from_tuple(tuple: Self::Tuple) -> Self;
 }
 
+pub trait TupleIsNotEmpty {}
+
 pub trait Tuple<TupleSpec> {
     type Output;
-    fn on_all_only_mut(self, tuple_spec: TupleSpec) -> Self::Output;
+    fn own_tuple_mut_spec(self, tuple_spec: TupleSpec) -> Self::Output;
+}
+
+/// Like [`Tuple`], but over `&self`.
+pub trait RefTuple<TupleSpec> {
+    type Output;
+    fn ref_tuple_mut_spec(&self, tuple_spec: TupleSpec) -> Self::Output;
 }
 
 pub trait TupleSpec<Member> {
@@ -24,9 +32,19 @@ pub trait TupleSpec<Member> {
     ) -> Self::Output;
 }
 
+/// Like [`TupleSpec`], but always borrows each member (`&Member`), so `Member`
+/// may be `?Sized` (e.g. `str`).
+pub trait TupleSpecRef<Member: ?Sized> {
+    type Output;
+    fn on_each<const LAST_INDEX: usize, const INDEX: usize>(
+        &mut self,
+        member: &Member,
+    ) -> Self::Output;
+}
+
 pub trait TupleLast<TupleLastSpec> {
     type Output;
-    fn on_all(self, tuple_spec: TupleLastSpec) -> Self::Output;
+    fn own_tuple_own_spec(self, tuple_spec: TupleLastSpec) -> Self::Output;
 }
 
 pub trait TupleLastSpec<Member, Last> {
@@ -40,7 +58,7 @@ pub trait TupleLastSpec<Member, Last> {
 }
 
 pub trait TupleAsRef<'a> {
-    type Output: 'a;
+    type Output;
     fn tuple_as_ref(&'a self) -> Self::Output;
 }
 
@@ -132,9 +150,32 @@ macro_rules! implt {
                 type Output = (
                     $(<TS as TupleSpec<[<T $num>]> >::Output,)*
                 );
-                fn on_all_only_mut(self, #[allow(unused)] mut tuple_spec: TS) -> Self::Output {
+                fn own_tuple_mut_spec(self, #[allow(unused)] mut tuple_spec: TS) -> Self::Output {
                     (
                         $(<TS as TupleSpec<[<T $num>]> >::on_each::<$size,$num>(&mut tuple_spec, self.$num),)*
+                    )
+                }
+            }
+
+            // Owned members must be Sized. (`?Sized` is for pointees of `(&T,…)`,
+            // which would overlap this impl — see concept_6.)
+            impl<$([<T $num>],)* TS> RefTuple<TS> for ($(&[<T $num>],)*)
+            where
+                $([<T $num>]: ?Sized,)*
+                $(TS: TupleSpecRef<[<T $num>]>,)*
+            {
+                type Output = (
+                    $(<TS as TupleSpecRef<[<T $num>]>>::Output,)*
+                );
+                fn ref_tuple_mut_spec(
+                    &self,
+                    #[allow(unused)] mut tuple_spec: TS,
+                ) -> Self::Output {
+                    (
+                        $(<TS as TupleSpecRef<[<T $num>]>>::on_each::<$size, $num>(
+                            &mut tuple_spec,
+                            &self.$num,
+                        ),)*
                     )
                 }
             }
@@ -162,7 +203,9 @@ macro_rules! implt {
     };
     ($($num:literal)* last $last:literal) => {
         implt!($($num)* $last size $last);
+
         paste::paste!(
+            impl<$([<T $num>],)* [<T $last>],> TupleIsNotEmpty for ($([<T $num>],)* [<T $last>],) {}
             impl<$([<T $num>],)* [<T $last>], TS> TupleLast<TS> for ($([<T $num>],)* [<T $last>],)
             where
                 $(TS: TupleLastSpec<[<T $num>], [<T $last>]>,)*
@@ -172,7 +215,7 @@ macro_rules! implt {
                     $(<TS as TupleLastSpec<[<T $num>], [<T $last>]>>::Output,)*
                     <TS as TupleLastSpec<[<T $last>], [<T $last>]>>::LastOutput,
                 );
-                fn on_all(self, #[allow(unused)] mut tuple_spec: TS) -> Self::Output {
+                fn own_tuple_own_spec(self, #[allow(unused)] mut tuple_spec: TS) -> Self::Output {
                     (
                         $(<TS as TupleLastSpec<[<T $num>], [<T $last>]> >::on_each::<$last,$num>(&mut tuple_spec, self.$num),)*
                         <TS as TupleLastSpec<[<T $last>], [<T $last>]> >::on_last::<$last>(tuple_spec, self.$last),
@@ -187,7 +230,7 @@ macro_rules! implt {
 
 impl<TS> TupleLast<TS> for () {
     type Output = ();
-    fn on_all(self, _: TS) -> Self::Output {}
+    fn own_tuple_own_spec(self, _: TS) -> Self::Output {}
 }
 
 implt!(size 0);
@@ -250,7 +293,7 @@ mod calling_fn_test {
             input_info,
             output_info: _,
         } = super::FnInfo::info(example);
-        let populated = input_info.on_all_only_mut(DefaultFromPhantom);
+        let populated = input_info.own_tuple_mut_spec(DefaultFromPhantom);
         let output = FnOnceStable::call_once(example, populated);
         assert_eq!(output, "0 false");
     }
@@ -262,7 +305,7 @@ mod basic_example {
     #![deny(unused_must_use)]
     #![allow(non_camel_case_types)]
 
-    use crate::tuple_trait::{BuildTuple, Tuple, TupleAsRef, TupleSpec};
+    use crate::tuple_trait::{BuildTuple, RefTuple, Tuple, TupleAsRef, TupleSpec, TupleSpecRef};
     use core::fmt;
     use std::marker::PhantomData;
 
@@ -270,7 +313,20 @@ mod basic_example {
 
     impl<M> TupleSpec<&M> for join<'_>
     where
-        M: fmt::Display,
+        M: fmt::Display + ?Sized,
+    {
+        type Output = ();
+        fn on_each<const LEN: usize, const INDEX: usize>(&mut self, member: &M) -> Self::Output {
+            self.0.push_str(format!("{}", member).as_str());
+            if LEN != INDEX {
+                self.0.push_str(", ");
+            }
+        }
+    }
+
+    impl<M> TupleSpecRef<M> for join<'_>
+    where
+        M: fmt::Display + ?Sized,
     {
         type Output = ();
         fn on_each<const LEN: usize, const INDEX: usize>(&mut self, member: &M) -> Self::Output {
@@ -287,12 +343,23 @@ mod basic_example {
 
         let tuple = (3, "hello world", true);
 
-        TupleAsRef::tuple_as_ref(&tuple).on_all_only_mut(join(&mut str));
+        TupleAsRef::tuple_as_ref(&tuple).own_tuple_mut_spec(join(&mut str));
 
         // join didnt hold any lifetimes as I can move tuple
         let _ = tuple;
 
         assert_eq!(str.as_str(), "3, hello world, true")
+    }
+
+    #[test]
+    fn use_ref_tuple() {
+        use crate::tuple_trait::RefTuple;
+
+        let mut str = String::new();
+        let key = String::from("key");
+        // concept_6 pattern: tuple of refs, no HRTB / 'static
+        (key.as_str(), "todo", "tag").ref_tuple_mut_spec(join(&mut str));
+        assert_eq!(str.as_str(), "key, todo, tag")
     }
 
     struct phantomize;
@@ -312,7 +379,7 @@ mod basic_example {
             PhantomData<usize>,
             PhantomData<&str>,
             PhantomData<bool>,
-        ) = tuple.tuple_as_ref().on_all_only_mut(phantomize);
+        ) = tuple.tuple_as_ref().own_tuple_mut_spec(phantomize);
     }
 
     struct Ctx<'b>(&'b mut String);
@@ -345,6 +412,6 @@ mod basic_example {
         (&'static str,): for<'shllow> Tuple<double_lifetime<'shllow, 'deep>>,
     {
         let ctx = double_lifetime(ctx);
-        ("hello",).into_bigger(this).on_all_only_mut(ctx);
+        ("hello",).into_bigger(this).own_tuple_mut_spec(ctx);
     }
 }

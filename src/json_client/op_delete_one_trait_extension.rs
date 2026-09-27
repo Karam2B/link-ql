@@ -7,7 +7,13 @@ type JsonDeleteOneInitSplitForWheres = Vec<Box<dyn Any + Send>>;
 
 use crate::{
     database_extention::DatabaseExt,
-    extentions::common_expressions::raw_from_row::RawFromRow,
+    json_client::{
+        compat::{
+            delete_pre_op::ErasedDeletePreOp,
+            raw_from_row::RawFromRow,
+        },
+        dynamic_collection::DynamicCollection,
+    },
     fix_executor::ExecutorTrait,
     from_row::FromRowData,
     gen_serde::{Serialize, json_serialize_side::JsonAsString},
@@ -16,7 +22,11 @@ use crate::{
         boxed_operation::BoxedOperation,
         delete::{DeleteLink, DeleteLinkData, DeleteLinkPreOp, DeleteLinkSplit},
     },
-    sqlx_query_builder::{basic_expressions::ManyFlat, trait_objects::ManyBoxedExpressions},
+    sqlx_query_builder::{
+        Expression, Join,
+        combinators::OptionalExpression,
+        trait_objects::{box_expression, BoxedExpression},
+    },
 };
 
 pub struct JsonDeleteLinksFromRow<S>(pub Vec<Box<dyn RawFromRow<S> + Send>>);
@@ -35,39 +45,29 @@ impl<'r, S: Database> crate::from_row::FromRowAlias<'r, S::Row> for JsonDeleteLi
             .collect()
     }
 
-    fn pre_alias(
+    fn str_alias(
         &self,
-        row: crate::from_row::RowPreAliased<'r, S::Row>,
+        row: crate::from_row::RowStrAliased<'r, S::Row>,
     ) -> Result<Self::RData, crate::from_row::FromRowError>
     where
         S::Row: sqlx::Row,
     {
         self.0
             .iter()
-            .map(|from_row| RawFromRow::dyn_pre_alias(&**from_row, row.clone()))
+            .map(|from_row| RawFromRow::dyn_str_alias(&**from_row, row.clone()))
             .collect()
     }
 
-    fn post_alias(
+    fn num_alias(
         &self,
-        _: crate::from_row::RowPostAliased<'r, S::Row>,
-    ) -> Result<Self::RData, crate::from_row::FromRowError>
-    where
-        S::Row: sqlx::Row,
-    {
-        panic!("to be deprecated")
-    }
-
-    fn two_alias(
-        &self,
-        row: crate::from_row::RowTwoAliased<'r, S::Row>,
+        row: crate::from_row::RowNumAliased<'r, S::Row>,
     ) -> Result<Self::RData, crate::from_row::FromRowError>
     where
         S::Row: sqlx::Row,
     {
         self.0
             .iter()
-            .map(|from_row| RawFromRow::dyn_two_alias(&**from_row, row.clone()))
+            .map(|from_row| RawFromRow::dyn_num_alias(&**from_row, row.clone()))
             .collect()
     }
 }
@@ -112,8 +112,8 @@ pub trait JsonDeleteOneLink<S: Database>: Send + Sync + 'static {
         &self,
         init_split_for_wheres: Box<dyn Any + Send>,
         pre_op_split_wheres: Box<dyn Any + Send>,
-    ) -> Box<dyn ManyBoxedExpressions<S> + Send>;
-    fn dyn_delete_return_expression(&self) -> Box<dyn ManyBoxedExpressions<S> + Send>;
+    ) -> Box<dyn BoxedExpression<S> + Send>;
+    fn dyn_delete_return_expression(&self) -> Box<dyn BoxedExpression<S> + Send>;
     fn dyn_from_row(&self) -> Box<dyn RawFromRow<S> + Send>;
     fn dyn_take_once(
         &self,
@@ -130,29 +130,26 @@ pub trait JsonDeleteOneLink<S: Database>: Send + Sync + 'static {
 impl<T, S> JsonDeleteOneLink<S> for T
 where
     T: Send + Sync + 'static,
-    S: Database,
+    S: Database + DatabaseExt + Sync,
     T: DeleteLink,
-    T: DeleteLinkPreOp<()>,
-    <T as DeleteLinkPreOp<()>>::InitSplitForPreOp: Send + 'static,
-    <T as DeleteLinkPreOp<()>>::PreOp: Operation<S> + 'static,
+    T: ErasedDeletePreOp<S>,
     T::PreOpOutput: Send + 'static,
     T::PreOpSplitWheres: Send + 'static,
     T::PreOpSplitTake: Send + 'static,
     T::InitSplitForWheres: Send + 'static,
-    T::Wheres: Send + ManyBoxedExpressions<S>,
-    T::DeleteReturnExpression: Send + ManyBoxedExpressions<S>,
+    T::Wheres: Send + OptionalExpression,
+    for<'e> Join<T::Wheres>: Expression<'e, S>,
+    T::DeleteReturnExpression: Send + OptionalExpression,
+    for<'e> Join<T::DeleteReturnExpression>: Expression<'e, S>,
     T::DeleteReturnFromRow: Send + Sync + RawFromRow<S>,
     T::Output: Send + Serialize<JsonAsString>,
 {
     fn dyn_pre_op(
         &self,
         init: Box<dyn Any + Send>,
-        _wheres: &dyn Any,
+        wheres: &dyn Any,
     ) -> Box<dyn BoxedOperation<S> + Send> {
-        let downcasted_init = init
-            .downcast::<<T as DeleteLinkPreOp<()>>::InitSplitForPreOp>()
-            .unwrap();
-        Box::new(self.pre_op(*downcasted_init, &()))
+        self.erased_pre_op(init, wheres)
     }
 
     fn dyn_split_pre_op(
@@ -168,18 +165,18 @@ where
         &self,
         init_split_for_wheres: Box<dyn Any + Send>,
         pre_op_split_wheres: Box<dyn Any + Send>,
-    ) -> Box<dyn ManyBoxedExpressions<S> + Send> {
+    ) -> Box<dyn BoxedExpression<S> + Send> {
         let init = init_split_for_wheres
             .downcast::<T::InitSplitForWheres>()
             .unwrap();
         let pre = pre_op_split_wheres
             .downcast::<T::PreOpSplitWheres>()
             .unwrap();
-        Box::new(self.wheres(*init, *pre))
+        box_expression(self.wheres(*init, *pre), " AND ")
     }
 
-    fn dyn_delete_return_expression(&self) -> Box<dyn ManyBoxedExpressions<S> + Send> {
-        Box::new(self.delete_return_expression())
+    fn dyn_delete_return_expression(&self) -> Box<dyn BoxedExpression<S> + Send> {
+        box_expression(self.delete_return_expression(), ", ")
     }
 
     fn dyn_from_row(&self) -> Box<dyn RawFromRow<S> + Send> {
@@ -248,7 +245,7 @@ where
 
     type InitSplitForWheres = Box<dyn Any + Send>;
 
-    type Wheres = Box<dyn ManyBoxedExpressions<S> + Send>;
+    type Wheres = Box<dyn BoxedExpression<S> + Send>;
 
     fn wheres(
         &self,
@@ -258,7 +255,7 @@ where
         self.dyn_wheres(init_split_for_wheres, pre_op_split_wheres)
     }
 
-    type DeleteReturnExpression = Box<dyn ManyBoxedExpressions<S> + Send>;
+    type DeleteReturnExpression = Box<dyn BoxedExpression<S> + Send>;
 
     fn delete_return_expression(&self) -> Self::DeleteReturnExpression {
         self.dyn_delete_return_expression()
@@ -365,29 +362,27 @@ where
 
     type InitSplitForWheres = JsonDeleteOneInitSplitForWheres;
 
-    type Wheres = ManyFlat<Vec<Box<dyn ManyBoxedExpressions<S> + Send>>>;
+    type Wheres = Vec<Box<dyn BoxedExpression<S> + Send>>;
 
     fn wheres(
         &self,
         init_split_for_wheres: Self::InitSplitForWheres,
         pre_op_split_wheres: Self::PreOpSplitWheres,
     ) -> Self::Wheres {
-        ManyFlat(
-            self.iter()
-                .zip(init_split_for_wheres.into_iter().zip(pre_op_split_wheres))
-                .map(|(link, (init, pre))| link.as_ref().dyn_wheres(init, pre))
-                .collect(),
-        )
+        self
+            .iter()
+            .zip(init_split_for_wheres.into_iter().zip(pre_op_split_wheres))
+            .map(|(link, (init, pre))| link.as_ref().dyn_wheres(init, pre))
+            .collect()
     }
 
-    type DeleteReturnExpression = ManyFlat<Vec<Box<dyn ManyBoxedExpressions<S> + Send>>>;
+    type DeleteReturnExpression = Vec<Box<dyn BoxedExpression<S> + Send>>;
 
     fn delete_return_expression(&self) -> Self::DeleteReturnExpression {
-        ManyFlat(
-            self.iter()
-                .map(|link| link.as_ref().dyn_delete_return_expression())
-                .collect(),
-        )
+        self
+            .iter()
+            .map(|link| link.as_ref().dyn_delete_return_expression())
+            .collect()
     }
 
     type DeleteReturnFromRow = JsonDeleteLinksFromRow<S>;

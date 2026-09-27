@@ -5,8 +5,6 @@ use sqlx::ColumnIndex;
 use crate::{
     collections::Collection,
     database_extention::DatabaseExt,
-    expressions::ColumnEqual,
-    extentions::common_expressions::Scoped,
     fix_executor::ExecutorTrait,
     from_row::FromRowAlias,
     gen_serde::{
@@ -14,7 +12,7 @@ use crate::{
         json_format_side::{JsonAsArcCursor, JsonFormat},
     },
     json_client::{
-        DynManyToMany, DynOptionalToMany,
+        DynManyToMany, DynOneToMany,
         client_interface::{SupportedUpdateLink, UpdateOneError, UpdateOneInput, UpdateOneOutput},
         dynamic_collection::{
             CollectionToSerialize, DynamicCollection, DynamicInsertInput, DynamicUpdateInput,
@@ -25,18 +23,21 @@ use crate::{
     links::{
         DefaultRelationKey,
         relation_many_to_many::{ManyToMany, RemoveJunctionId, SetJunctionId},
-        relation_optional_to_many::OptionalToMany,
+        relation_one_to_many::OneToMany,
         update_links::{SetId, SetNew},
     },
     operations::{
         Operation,
+        insert::AbortOperation,
+        operations_expressions_crossover::ExpressionsForOperation,
         update::{Update, UpdateLink, UpdateLinkData, UpdateLinkSplit},
     },
+    sqlx_query_builder::basic_expressions::{Bind, ColumnEqual},
 };
 
 type DynCollection<S> = Arc<DynamicCollection<S>>;
 
-/// Links that add columns to the UPDATE SET clause (e.g. optional_to_many `set_null` clears an FK).
+/// Links that add columns to the UPDATE SET clause (e.g. one_to_many `set_null` clears an FK).
 fn update_link_contributes_set_clause(
     link: &SupportedUpdateLink,
     rel: &LinkInformations,
@@ -44,7 +45,7 @@ fn update_link_contributes_set_clause(
 ) -> bool {
     match link {
         SupportedUpdateLink::SetNull { to } | SupportedUpdateLink::SetNew { to, .. } => {
-            rel.optional_to_many.contains(&FromTo {
+            rel.one_to_many.contains(&FromTo {
                 from: Arc::clone(base),
                 to: to.detach(),
             })
@@ -54,7 +55,7 @@ fn update_link_contributes_set_clause(
                 from: Arc::clone(base),
                 to: to.detach(),
             };
-            rel.optional_to_many.contains(&forward) || rel.many_to_many.contains(&forward)
+            rel.one_to_many.contains(&forward) || rel.many_to_many.contains(&forward)
         }
         SupportedUpdateLink::RemoveId { to, .. } => rel.many_to_many.contains(&FromTo {
             from: Arc::clone(base),
@@ -74,7 +75,7 @@ where
     DynCollection<S>: for<'r> FromRowAlias<'r, S::Row, RData = CollectionToSerialize>,
     DynamicUpdateInput<S>: for<'d> Deserialize<'d, JsonAsArcCursor, Handler = DynCollection<S>>,
     DynamicInsertInput<S>: for<'d> Deserialize<'d, JsonAsArcCursor, Handler = DynCollection<S>>,
-    SetId<DynOptionalToMany<S>, Option<i64>>: UpdateLinkSplit<
+    SetId<DynOneToMany<S>, Option<i64>>: UpdateLinkSplit<
         Link: JsonUpdateOneLink<S>
                   + UpdateLink<
             InitSplitForPreOp: Send + 'static,
@@ -101,7 +102,7 @@ where
             InitSplitPostOp: Send + 'static,
         >,
     >,
-    SetNew<DynOptionalToMany<S>, DynamicInsertInput<S>>: UpdateLinkSplit<
+    SetNew<DynOneToMany<S>, DynamicInsertInput<S>>: UpdateLinkSplit<
         Link: JsonUpdateOneLink<S>
                   + UpdateLink<
             InitSplitForPreOp: Send + 'static,
@@ -164,7 +165,7 @@ where
 
                     if rel_guard.many_to_many.contains(&forward) {
                         let (link, data) = SetJunctionId {
-                            relation: ManyToMany {
+                            relation: ManyToMany::<false, _, _, _> {
                                 relation_key: DefaultRelationKey,
                                 from: base.clone(),
                                 to,
@@ -182,9 +183,9 @@ where
                                 post_op: Box::new(data.post_op),
                             },
                         });
-                    } else if rel_guard.optional_to_many.contains(&forward) {
+                    } else if rel_guard.one_to_many.contains(&forward) {
                         let (link, data) = SetId {
-                            relation: OptionalToMany {
+                            relation: OneToMany {
                                 fk_unique_id: DefaultRelationKey,
                                 from: base.clone(),
                                 to,
@@ -217,7 +218,7 @@ where
                         deserialize(Arc::from(value.0.as_str()), Arc::clone(&to), JsonFormat)
                             .map_err(|_| UpdateOneError::InvalidData)?;
                     let (link, data) = SetNew {
-                        relation: OptionalToMany {
+                        relation: OneToMany {
                             fk_unique_id: DefaultRelationKey,
                             from: base.clone(),
                             to,
@@ -244,7 +245,7 @@ where
                     let to = to_gaurd.clone();
                     all_gaurds.push(to_gaurd);
                     let (link, data) = SetId {
-                        relation: OptionalToMany {
+                        relation: OneToMany {
                             fk_unique_id: DefaultRelationKey,
                             from: base.clone(),
                             to,
@@ -281,7 +282,7 @@ where
                     }
 
                     let (link, data) = RemoveJunctionId {
-                        relation: ManyToMany {
+                        relation: ManyToMany::<false, _, _, _> {
                             relation_key: DefaultRelationKey,
                             from: base.clone(),
                             to,
@@ -311,14 +312,14 @@ where
                 partial: data,
                 wheres: ColumnEqual {
                     col: base.id().scoped(),
-                    eq: input.id,
+                    eq: Bind(input.id),
                 },
                 links,
+                infalibility: AbortOperation,
             },
             &mut conn,
         )
-        .await
-        .expect("bug: update one failed");
+        .await;
 
         drop(all_gaurds);
         drop(rel_guard);

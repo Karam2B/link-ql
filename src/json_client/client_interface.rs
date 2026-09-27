@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use crate::expressions::ColumnEqual;
 use crate::gen_serde::Serialize;
 use crate::gen_serde::json_format_side::PartialDeserialize;
 use crate::gen_serde::json_serialize_side::JsonAsString;
@@ -29,7 +28,10 @@ pub enum SupportedType {
 //*******************
 #[derive(Debug)]
 pub enum SupportedFilter {
-    ColEq(ColumnEqual<ArcSubStr, PartialDeserialize>),
+    ColEq {
+        col: ArcSubStr,
+        eq: PartialDeserialize,
+    },
     ColNe {
         col: ArcSubStr,
         ne: PartialDeserialize,
@@ -101,7 +103,7 @@ pub enum AddCollectionError {
 //*******************
 #[derive(Debug)]
 pub enum AddLinkInput {
-    OptionalToMany { from: ArcSubStr, to: ArcSubStr },
+    OneToMany { from: ArcSubStr, to: ArcSubStr },
     ManyToMany { from: ArcSubStr, to: ArcSubStr },
     Timestamp { collection: ArcSubStr },
 }
@@ -189,7 +191,7 @@ pub enum InsertManyError {
 //*******************
 #[derive(Debug)]
 pub enum SupportedLinkFetchMany {
-    OptionalToMany { to: ArcSubStr },
+    OneToMany { to: ArcSubStr },
     ManyToMany { to: ArcSubStr },
     Timestamp,
 }
@@ -250,7 +252,7 @@ pub enum FetchManyError {
 //*******************
 #[derive(Debug)]
 pub enum SupportedLinkFetchOne {
-    OptionalToMany { to: ArcSubStr },
+    OneToMany { to: ArcSubStr },
     ManyToMany { to: ArcSubStr },
     Timestamp,
 }
@@ -324,7 +326,7 @@ pub enum UpdateOneError {
 //*******************
 #[derive(Debug)]
 pub enum SupportedDeleteLink {
-    OptionalToMany { to: ArcSubStr },
+    OneToMany { to: ArcSubStr },
     ManyToMany { to: ArcSubStr },
 }
 

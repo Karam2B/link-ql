@@ -61,17 +61,39 @@ mod impl_database_extention {
         fn id_on_create_table_expression() -> Self::IdExpression {
             IdExpression
         }
+        type SinglePrimaryKeyConstaint = IdExpression2;
+        fn single_primary_key_constaint_expression() -> Self::SinglePrimaryKeyConstaint {
+            IdExpression2
+        }
+        type MultiplePrimaryKeyConstaint = IdExpression2;
+        fn multiple_primary_key_constaint_expression() -> Self::MultiplePrimaryKeyConstaint {
+            IdExpression2
+        }
     }
 
     pub struct IdExpression;
 
-    impl OpExpression for IdExpression {}
+    impl OpExpression for IdExpression {
+    }
     impl<'q> Expression<'q, Sqlite> for IdExpression {
         fn expression(self, ctx: &mut StatementBuilder<'q, Sqlite>)
         where
             Sqlite: DatabaseExt,
         {
             ctx.syntax(&"\"id\" INTEGER PRIMARY KEY AUTOINCREMENT");
+        }
+    }
+
+    pub struct IdExpression2;
+
+    impl OpExpression for IdExpression2 {
+    }
+    impl<'q> Expression<'q, Sqlite> for IdExpression2 {
+        fn expression(self, ctx: &mut StatementBuilder<'q, Sqlite>)
+        where
+            Sqlite: DatabaseExt,
+        {
+            ctx.syntax(&"INTEGER PRIMARY KEY");
         }
     }
 }

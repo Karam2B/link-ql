@@ -1,16 +1,17 @@
 use std::collections::BTreeMap;
 
-use crate::expressions::ColumnEqual;
 use crate::gen_serde::json_format_side::{JsonAsArcCursor, PartialDeserialize};
+use crate::gen_serde::json_serialize_side::JsonAsString;
 use crate::gen_serde::{
     Deserialize, DeserializeMap, DeserializeSeq, DeserializeSpec, Deserializer, KnownKey,
-    UnknownKey,
+    ObjectEncoding, Serialize, UnknownKey,
 };
 use crate::json_client::client_interface::{
     AddCollectionInput, AddLinkInput, DeleteOneInput, Direction, DynamicFieldInput, FetchManyInput,
-    FetchOneInput, FirstItem, InsertManyInput, InsertManyItem, InsertOneInput, OrderBy, Pagination,
-    SupportedDeleteLink, SupportedFilter, SupportedInsertLink, SupportedLinkFetchMany,
-    SupportedLinkFetchOne, SupportedType, SupportedUpdateLink, UpdateOneInput,
+    FetchOneInput, FirstItem, InsertManyInput, InsertManyItem, InsertManyOutput, InsertOneInput,
+    InsertOneOutput, OrderBy, Pagination, SupportedDeleteLink, SupportedFilter,
+    SupportedInsertLink, SupportedLinkFetchMany, SupportedLinkFetchOne, SupportedType,
+    SupportedUpdateLink, UpdateOneInput,
 };
 use crate::sub_arc::{ArcSubStr, SubArc};
 
@@ -308,7 +309,7 @@ where
                     DeserializeMap::deserialize_with_known_key(serialized, &mut map, "col", ())?;
                 let eq =
                     DeserializeMap::deserialize_with_known_key(serialized, &mut map, "eq", ())?;
-                SupportedFilter::ColEq(ColumnEqual { col, eq })
+                SupportedFilter::ColEq { col, eq }
             }
             "col_ne" => {
                 let col =
@@ -345,7 +346,7 @@ where
                     DeserializeMap::deserialize_with_known_key(serialized, &mut map, "lte", ())?;
                 SupportedFilter::ColLte { col, lte }
             }
-            "col_contains" => {
+            "col_like" | "col_contains" => {
                 let col =
                     DeserializeMap::deserialize_with_known_key(serialized, &mut map, "col", ())?;
                 let value =
@@ -387,7 +388,7 @@ where
                     "filters",
                     (),
                 )?;
-                SupportedFilter::Group { filters }
+                SupportedFilter::And { filters }
             }
             _ => return Err(S::Err::from("unsupported filter ty")),
         };
@@ -413,10 +414,10 @@ where
         let ty: ArcSubStr =
             DeserializeMap::deserialize_with_known_key(serialized, &mut map, "ty", ())?;
         let out = match ty.as_str() {
-            "optional_to_many" => {
+            "one_to_many" => {
                 let to =
                     DeserializeMap::deserialize_with_known_key(serialized, &mut map, "to", ())?;
-                SupportedLinkFetchMany::OptionalToMany { to }
+                SupportedLinkFetchMany::OneToMany { to }
             }
             "many_to_many" => {
                 let to =
@@ -448,12 +449,12 @@ where
         let ty: ArcSubStr =
             DeserializeMap::deserialize_with_known_key(serialized, &mut map, "ty", ())?;
         let out = match ty.as_str() {
-            "optional_to_many" => {
+            "one_to_many" => {
                 let from =
                     DeserializeMap::deserialize_with_known_key(serialized, &mut map, "from", ())?;
                 let to =
                     DeserializeMap::deserialize_with_known_key(serialized, &mut map, "to", ())?;
-                AddLinkInput::OptionalToMany { from, to }
+                AddLinkInput::OneToMany { from, to }
             }
             "many_to_many" => {
                 let from =
@@ -495,10 +496,10 @@ where
         let ty: ArcSubStr =
             DeserializeMap::deserialize_with_known_key(serialized, &mut map, "ty", ())?;
         let out = match ty.as_str() {
-            "optional_to_many" => {
+            "one_to_many" => {
                 let to =
                     DeserializeMap::deserialize_with_known_key(serialized, &mut map, "to", ())?;
-                SupportedLinkFetchOne::OptionalToMany { to }
+                SupportedLinkFetchOne::OneToMany { to }
             }
             "many_to_many" => {
                 let to =
@@ -745,10 +746,10 @@ where
         let ty: ArcSubStr =
             DeserializeMap::deserialize_with_known_key(serialized, &mut map, "ty", ())?;
         let out = match ty.as_str() {
-            "optional_to_many" => {
+            "one_to_many" => {
                 let to =
                     DeserializeMap::deserialize_with_known_key(serialized, &mut map, "to", ())?;
-                SupportedDeleteLink::OptionalToMany { to }
+                SupportedDeleteLink::OneToMany { to }
             }
             "many_to_many" => {
                 let to =

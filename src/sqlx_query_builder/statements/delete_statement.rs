@@ -1,4 +1,4 @@
-use crate::sqlx_query_builder::{Expression, ManyExpressions, OpExpression};
+use crate::sqlx_query_builder::{Expression, Join, OpExpression};
 
 pub struct DeleteStatement<TableName, Wheres, Returning> {
     pub table_name: TableName,
@@ -6,14 +6,15 @@ pub struct DeleteStatement<TableName, Wheres, Returning> {
     pub returning: Returning,
 }
 
-impl<T, W, R> OpExpression for DeleteStatement<T, W, R> {}
+impl<T, W, R> OpExpression for DeleteStatement<T, W, R> {
+}
 
 impl<'q, S, TableName, Wheres, Returning> Expression<'q, S>
     for DeleteStatement<TableName, Wheres, Returning>
 where
-    TableName: Expression<'q, S> + 'q,
-    Wheres: ManyExpressions<'q, S> + 'q,
-    Returning: ManyExpressions<'q, S> + 'q,
+    TableName: Expression<'q, S>,
+    Join<Wheres>: Expression<'q, S>,
+    Join<Returning>: Expression<'q, S>,
 {
     fn expression(self, ctx: &mut crate::sqlx_query_builder::StatementBuilder<'q, S>)
     where
@@ -21,8 +22,18 @@ where
     {
         ctx.syntax("DELETE FROM ");
         self.table_name.expression(ctx);
-        self.wheres.expression(" WHERE ", " AND ", ctx);
-        self.returning.expression(" RETURNING ", ", ", ctx);
+        Join {
+            start: " WHERE ",
+            separator: " AND ",
+            items: self.wheres,
+        }
+        .expression(ctx);
+        Join {
+            start: " RETURNING ",
+            separator: ", ",
+            items: self.returning,
+        }
+        .expression(ctx);
         ctx.syntax(";");
     }
 }

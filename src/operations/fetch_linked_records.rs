@@ -15,11 +15,13 @@ use crate::{
     from_row::FromRowAlias,
     links::{
         relation_many_to_many::ManyToMany,
-        relation_optional_to_many::join_expression::JoinExpression,
-        relation_optional_to_many_inverse::OptionalToManyInverse,
+        relation_one_to_many::join_expression::JoinExpression,
+        relation_one_to_many_inverse::OneToManyInverse,
     },
     operations::{CollectionOutput, Operation, OperationOutput},
-    sqlx_query_builder::{Expression, OpExpression, StatementBuilder},
+    sqlx_query_builder::{
+        Expression, OpExpression, StatementBuilder, basic_expressions::Bind,
+    },
     statements::select_statement::SelectStatement,
 };
 
@@ -28,7 +30,7 @@ pub type LinkedRecordsMap<ParentId, ChildId, ChildOutput> =
 
 pub type ManyToManyLinkedMap<FromId, ToId, ToOutput> = LinkedRecordsMap<FromId, ToId, ToOutput>;
 
-pub type OptionalToManyInverseLinkedMap<FromId, ToId, ToOutput> =
+pub type OneToManyInverseLinkedMap<FromId, ToId, ToOutput> =
     LinkedRecordsMap<FromId, ToId, ToOutput>;
 
 fn rows_to_linked_map<S, FromId, ToId, ToOutput, To>(
@@ -66,7 +68,8 @@ struct InverseLinkedSelect {
     to_cols: Vec<String>,
 }
 
-impl OpExpression for InverseLinkedSelect {}
+impl OpExpression for InverseLinkedSelect {
+}
 
 impl<'q, S> Expression<'q, S> for InverseLinkedSelect
 where
@@ -89,19 +92,19 @@ where
     }
 }
 
-pub struct FetchOptionalToManyInverseLinked<Key, From, To>
+pub struct FetchOneToManyInverseLinked<Key, From, To>
 where
     From: Collection,
     To: Collection + Members + TableNameExpression,
 {
-    pub link: OptionalToManyInverse<Key, From, To>,
+    pub link: OneToManyInverse<Key, From, To>,
     pub from_ids: Vec<<From::Id as CollectionId>::IdData>,
     fk_col: String,
     to_table: String,
     to_cols: Vec<String>,
 }
 
-impl<Key, From, To> Clone for FetchOptionalToManyInverseLinked<Key, From, To>
+impl<Key, From, To> Clone for FetchOneToManyInverseLinked<Key, From, To>
 where
     Key: Clone,
     From: Collection + Clone,
@@ -119,26 +122,26 @@ where
     }
 }
 
-impl<Key, From, To> OperationOutput for FetchOptionalToManyInverseLinked<Key, From, To>
+impl<Key, From, To> OperationOutput for FetchOneToManyInverseLinked<Key, From, To>
 where
     From: Collection,
     To: Collection + Members + TableNameExpression,
 {
-    type Output = OptionalToManyInverseLinkedMap<
+    type Output = OneToManyInverseLinkedMap<
         <From::Id as CollectionId>::IdData,
         <To::Id as CollectionId>::IdData,
         To::OutputData,
     >;
 }
 
-impl<Key, From, To> FetchOptionalToManyInverseLinked<Key, From, To>
+impl<Key, From, To> FetchOneToManyInverseLinked<Key, From, To>
 where
     Key: Clone + AsRef<str>,
     From: Collection + TableNameExpression + Clone,
     To: Collection + TableNameExpression + Members + Clone,
 {
     pub fn new(
-        link: OptionalToManyInverse<Key, From, To>,
+        link: OneToManyInverse<Key, From, To>,
         from_ids: Vec<<From::Id as CollectionId>::IdData>,
     ) -> Self {
         let to = link.to.clone();
@@ -156,7 +159,7 @@ where
     }
 }
 
-impl<S, Key, From, To> Operation<S> for FetchOptionalToManyInverseLinked<Key, From, To>
+impl<S, Key, From, To> Operation<S> for FetchOneToManyInverseLinked<Key, From, To>
 where
     S: DatabaseExt + ExecutorTrait,
     Key: Clone + AsRef<str> + Send,
@@ -186,17 +189,17 @@ where
         let fk_col = self.fk_col.clone();
 
         let (stmt, args) = StatementBuilder::<'_, S>::new(SelectStatement {
-            select_items: InverseLinkedSelect {
+            select_items: (InverseLinkedSelect {
                 fk_col: fk_col.clone(),
                 to_table: to_table.clone(),
                 to_cols: self.to_cols,
-            },
+            },),
             from: table(to_table.clone()),
             joins: (),
-            wheres: ColumnIn {
+            wheres: (ColumnIn {
                 col: table(to_table).col(fk_col),
-                values: self.from_ids,
-            },
+                values: self.from_ids.into_iter().map(Bind).collect::<Vec<_>>(),
+            },),
             group_by: (),
             order: (),
             limit: (),
@@ -226,7 +229,8 @@ struct ManyToManyLinkedSelect {
     to_cols: Vec<String>,
 }
 
-impl OpExpression for ManyToManyLinkedSelect {}
+impl OpExpression for ManyToManyLinkedSelect {
+}
 
 impl<'q, S> Expression<'q, S> for ManyToManyLinkedSelect
 where
@@ -254,7 +258,7 @@ where
     From: Collection,
     To: Collection + Members + TableNameExpression,
 {
-    pub link: ManyToMany<Key, From, To>,
+    pub link: ManyToMany<false, Key, From, To>,
     pub from_ids: Vec<<From::Id as CollectionId>::IdData>,
     junction_table: String,
     from_col: String,
@@ -300,7 +304,7 @@ where
     To: Collection<Id: SingleColumnId> + TableNameExpression + Members + Clone,
 {
     pub fn new(
-        link: ManyToMany<Key, From, To>,
+        link: ManyToMany<false, Key, From, To>,
         from_ids: Vec<<From::Id as CollectionId>::IdData>,
     ) -> Self {
         let to = link.to.clone();
@@ -352,24 +356,24 @@ where
         let from_col = self.from_col.clone();
 
         let (stmt, args) = StatementBuilder::<'_, S>::new(SelectStatement {
-            select_items: ManyToManyLinkedSelect {
+            select_items: (ManyToManyLinkedSelect {
                 junction_table: junction.clone(),
                 from_col: from_col.clone(),
                 to_table: self.to_table,
                 to_cols: self.to_cols,
-            },
+            },),
             from: table(junction.clone()),
-            joins: JoinExpression {
+            joins: (JoinExpression {
                 join_type: "INNER JOIN",
                 foreign_table: self.link.to.table_name_expression(),
                 foreign_column: self.link.to.id().identifier(),
                 local_table: table(junction.clone()),
                 local_column: self.link.to_junction_column(),
-            },
-            wheres: ColumnIn {
+            },),
+            wheres: (ColumnIn {
                 col: table(junction).col(from_col),
-                values: self.from_ids,
-            },
+                values: self.from_ids.into_iter().map(Bind).collect::<Vec<_>>(),
+            },),
             group_by: (),
             order: (),
             limit: (),

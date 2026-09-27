@@ -9,7 +9,8 @@ use crate::{
         operations_expressions_crossover::{ExpressionsForOperation, TableExpressions},
     },
     sqlx_query_builder::{
-        Expression, ManyExpressions, StatementBuilder, basic_expressions::ManyFlat,
+        Expression, Join, StatementBuilder,
+        combinators::{Nest, OptionalExpression},
         statements::delete_statement::DeleteStatement,
     },
 };
@@ -158,16 +159,18 @@ where
     Base: Send,
     Base: Collection,
     Base: TableExpressions<
-            Identifier: for<'q> ManyExpressions<'q, S>,
+            Identifier: OptionalExpression,
             PascalCase: for<'q> Expression<'q, S>,
         >,
+    for<'q> Join<Base::Identifier>: Expression<'q, S>,
     Base: for<'r> FromRowAlias<'r, S::Row, RData = Base::OutputData>,
     Base::OutputData: Send,
     Base::Id: Send + CollectionId<IdData: Send>,
-    Base::Id: ExpressionsForOperation<Identifier: for<'q> ManyExpressions<'q, S>>,
+    Base::Id: ExpressionsForOperation<Identifier: OptionalExpression>,
+    for<'q> Join<<Base::Id as ExpressionsForOperation>::Identifier>: Expression<'q, S>,
     Base::Id: for<'r> FromRowAlias<'r, S::Row, RData = <Base::Id as CollectionId>::IdData>,
-    Wheres: Send,
-    Wheres: for<'q> ManyExpressions<'q, S>,
+    Wheres: Send + OptionalExpression,
+    for<'q> Join<Wheres>: Expression<'q, S>,
     Links: Send,
     Links: DeleteLink,
     Links::Output: Send,
@@ -175,8 +178,10 @@ where
     Links: DeleteLinkPreOp<Wheres, InitSplitForPreOp = PL::InitSplitForPreOp>,
     Links::PreOp: Send + Operation<S, Output = Links::PreOpOutput>,
     Links::InitSplitForWheres: Send,
-    Links::Wheres: for<'q> ManyExpressions<'q, S>,
-    Links::DeleteReturnExpression: for<'q> ManyExpressions<'q, S>,
+    Links::Wheres: OptionalExpression,
+    for<'q> Join<Links::Wheres>: Expression<'q, S>,
+    Links::DeleteReturnExpression: OptionalExpression,
+    for<'q> Join<Links::DeleteReturnExpression>: Expression<'q, S>,
     Links::DeleteReturnFromRow: Send,
     Links::DeleteReturnFromRow: for<'r> FromRowAlias<'r, S::Row>,
     Links::Output: Send,
@@ -206,15 +211,15 @@ where
 
             let (stmt, args) = StatementBuilder::<S>::new(DeleteStatement {
                 table_name: self.base.table_name_pascal_case(),
-                wheres: ManyFlat((
-                    self.wheres,
-                    link.wheres(link_data.wheres, pre_op_split_wheres),
-                )),
-                returning: ManyFlat((
-                    id.identifier(),
-                    self.base.identifier(),
-                    link.delete_return_expression(),
-                )),
+                wheres: (
+                    Nest(self.wheres),
+                    Nest(link.wheres(link_data.wheres, pre_op_split_wheres)),
+                ),
+                returning: (
+                    Nest(id.identifier()),
+                    Nest(self.base.identifier()),
+                    Nest(link.delete_return_expression()),
+                ),
             })
             .unwrap();
 
@@ -266,65 +271,80 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::operations::operations_expressions_crossover::ExpressionsForOperation;
-    use crate::operations::{LinkedOutput, Operation};
-    use crate::sqlx_query_builder::basic_expressions::ColumnEqual;
-    use crate::test_module::*;
     use crate::{
-        collections::Collection, connect_in_memory::ConnectInMemory, operations::delete::Delete,
+        connect_in_memory::ConnectInMemory,
+        operations::{LinkedOutput, Operation, delete::Delete},
+        sqlx_query_builder::basic_expressions::{Bind, ColumnEqual},
+        test_module::{Todo, TodoHandler},
+        track_sqlx_query::watch_sqlx_calls,
     };
     use sqlx::{Row, Sqlite};
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn main() {
-        let mut pool = Sqlite::in_memory_connection().await;
+        watch_sqlx_calls(async |actions| {
+            let mut pool = Sqlite::in_memory_connection().await;
 
-        sqlx::query(
-            "
-            CREATE TABLE Todo (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                done BOOLEAN NOT NULL,
-                description TEXT
-            );
-            INSERT INTO Todo (title, done, description) VALUES ('todo_1', false, 'description_1'), ('todo_2', true, 'description_2'), ('todo_3', false, 'description_3');
-        ",
-        )
-        .execute(&mut pool)
-        .await
-        .unwrap();
-
-        let output = Operation::<Sqlite>::exec_operation(
-            Delete {
-                base: TodoHandler,
-                wheres: ColumnEqual { col: "id", eq: 2 },
-                links: (),
-            },
-            &mut pool,
-        )
-        .await;
-
-        pretty_assertions::assert_eq!(
-            output,
-            vec![LinkedOutput {
-                id: 2,
-                attributes: Todo {
-                    title: String::from("todo_2"),
-                    done: true,
-                    description: Some(String::from("description_2")),
-                },
-                links: ()
-            }]
-        );
-
-        let check = sqlx::query("SELECT * FROM Todo;")
-            .fetch_all(&mut pool)
+            sqlx::query(
+                "
+                CREATE TABLE Todo (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    done BOOLEAN NOT NULL,
+                    description TEXT
+                );
+                INSERT INTO Todo (title, done, description) VALUES
+                    ('todo_1', false, 'description_1'),
+                    ('todo_2', true, 'description_2'),
+                    ('todo_3', false, 'description_3');
+                ",
+            )
+            .execute(&mut pool)
             .await
-            .unwrap()
-            .into_iter()
-            .map(|row| row.get::<i64, _>("id"))
-            .collect::<Vec<_>>();
+            .unwrap();
+            actions.clear();
 
-        pretty_assertions::assert_eq!(check, vec![1, 3]);
+            let output = Operation::<Sqlite>::exec_operation(
+                Delete {
+                    base: TodoHandler,
+                    wheres: ColumnEqual { col: "id", eq: Bind(2) },
+                    links: (),
+                },
+                &mut pool,
+            )
+            .await;
+
+            pretty_assertions::assert_eq!(
+                actions.take(),
+                vec![
+                    r#"DELETE FROM "Todo" WHERE "id" = $1 RETURNING "id", "title", "done", "description";"#
+                        .to_string(),
+                ]
+            );
+
+            pretty_assertions::assert_eq!(
+                output,
+                vec![LinkedOutput {
+                    id: 2,
+                    attributes: Todo {
+                        title: String::from("todo_2"),
+                        done: true,
+                        description: Some(String::from("description_2")),
+                    },
+                    links: ()
+                }]
+            );
+
+            let check = sqlx::query("SELECT * FROM Todo;")
+                .fetch_all(&mut pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|row| row.get::<i64, _>("id"))
+                .collect::<Vec<_>>();
+
+            pretty_assertions::assert_eq!(check, vec![1, 3]);
+        })
+        .await;
     }
 }

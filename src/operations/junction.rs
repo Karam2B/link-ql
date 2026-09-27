@@ -4,17 +4,21 @@ use crate::{
     collections::{Collection, CollectionId, SingleColumnId},
     database_extention::DatabaseExt,
     execute::Executable,
-    expressions::{ColumnEqual, table},
+    expressions::table,
     extentions::{
         Members,
-        common_expressions::{Aliased, Identifier, TableNameExpression},
+        common_expressions::{Aliased, TableNameExpression},
     },
     fix_executor::ExecutorTrait,
     from_row::FromRowAlias,
     links::relation_many_to_many::ManyToMany,
-    operations::{LinkedOutput, Operation, OperationOutput, fetch_one::FetchOne},
+    operations::{
+        LinkedOutput, Operation, OperationOutput, fetch_one::FetchOne,
+        operations_expressions_crossover::{ExpressionsForOperation, TableExpressions},
+    },
     sqlx_query_builder::{
-        Bind, Expression, ManyExpressions, StatementBuilder, functional_expr::ManyFlat,
+        basic_expressions::{Bind, ColumnEqual},
+        Expression, Join, StatementBuilder,
     },
     statements::{
         delete_statement::DeleteStatement,
@@ -29,7 +33,7 @@ pub trait ManyToManyJunctionNames {
     fn to_junction_col_as_str(&self) -> String;
 }
 
-impl<Key, From, To> ManyToManyJunctionNames for ManyToMany<Key, From, To>
+impl<Key, From, To> ManyToManyJunctionNames for ManyToMany<false, Key, From, To>
 where
     Key: Clone + AsRef<str>,
     From: Collection<Id: SingleColumnId> + TableNameExpression + Clone,
@@ -55,13 +59,13 @@ where
 
 #[derive(Clone)]
 pub struct InsertJunctionRow<Key, From, To> {
-    link: ManyToMany<Key, From, To>,
+    link: ManyToMany<false, Key, From, To>,
     from_id: i64,
     to_id: i64,
 }
 
 impl<Key, From, To> InsertJunctionRow<Key, From, To> {
-    pub fn new(link: ManyToMany<Key, From, To>, from_id: i64, to_id: i64) -> Self {
+    pub fn new(link: ManyToMany<false, Key, From, To>, from_id: i64, to_id: i64) -> Self {
         Self {
             link,
             from_id,
@@ -93,11 +97,19 @@ where
     async fn exec_operation(self, pool: &mut S::Connection) -> Self::Output {
         let (stmt, args) = StatementBuilder::<'_, S>::new(InsertStatement {
             table_name: self.link.junction_table_name(),
-            identifiers: ManyFlat((
-                self.link.from_junction_column(),
-                self.link.to_junction_column(),
-            )),
-            values: One(ManyFlat((Bind(self.from_id), Bind(self.to_id)))),
+            identifiers: Join {
+                start: "",
+                separator: ", ",
+                items: (
+                    self.link.from_junction_column(),
+                    self.link.to_junction_column(),
+                ),
+            },
+            values: One(Join {
+                start: "",
+                separator: ", ",
+                items: (Bind(self.from_id), Bind(self.to_id)),
+            }),
             returning: (),
         })
         .unwrap();
@@ -116,13 +128,13 @@ where
 
 #[derive(Clone)]
 pub struct DeleteJunctionRow<Key, From, To> {
-    link: ManyToMany<Key, From, To>,
+    link: ManyToMany<false, Key, From, To>,
     from_id: i64,
     to_id: i64,
 }
 
 impl<Key, From, To> DeleteJunctionRow<Key, From, To> {
-    pub fn new(link: ManyToMany<Key, From, To>, from_id: i64, to_id: i64) -> Self {
+    pub fn new(link: ManyToMany<false, Key, From, To>, from_id: i64, to_id: i64) -> Self {
         Self {
             link,
             from_id,
@@ -158,16 +170,20 @@ where
 
         let (stmt, args) = StatementBuilder::<'_, S>::new(DeleteStatement {
             table_name: self.link.junction_table_name(),
-            wheres: ManyFlat((
-                ColumnEqual {
-                    col: table(junction.clone()).col(from_col),
-                    eq: self.from_id,
-                },
-                ColumnEqual {
-                    col: table(junction).col(to_col),
-                    eq: self.to_id,
-                },
-            )),
+            wheres: Join {
+                start: "",
+                separator: ", ",
+                items: (
+                    ColumnEqual {
+                        col: table(junction.clone()).col(from_col),
+                        eq: Bind(self.from_id),
+                    },
+                    ColumnEqual {
+                        col: table(junction).col(to_col),
+                        eq: Bind(self.to_id),
+                    },
+                ),
+            },
             returning: (),
         })
         .unwrap();
@@ -186,13 +202,13 @@ where
 
 #[derive(Clone)]
 pub struct InsertJunctionAndFetch<Key, From, To> {
-    link: ManyToMany<Key, From, To>,
+    link: ManyToMany<false, Key, From, To>,
     from_id: i64,
     to_id: i64,
 }
 
 impl<Key, From, To> InsertJunctionAndFetch<Key, From, To> {
-    pub fn new(link: ManyToMany<Key, From, To>, from_id: i64, to_id: i64) -> Self {
+    pub fn new(link: ManyToMany<false, Key, From, To>, from_id: i64, to_id: i64) -> Self {
         Self {
             link,
             from_id,
@@ -216,19 +232,22 @@ where
     From: Collection<Id: SingleColumnId> + TableNameExpression + Clone + Send,
     <From as TableNameExpression>::LowerCaseTableNameExpression: AsRef<str>,
     <From::Id as CollectionId>::IdData: Send + for<'q> Encode<'q, S> + Type<S> + Copy,
-    To: Collection<Id: SingleColumnId + Identifier> + TableNameExpression + Members + Clone + Send,
+    To: Collection<Id: SingleColumnId> + TableNameExpression + TableExpressions<
+        ScopedAliased: for<'q> Expression<'q, S>,
+        PascalCase: for<'q> Expression<'q, S>,
+    > + Members + Clone + Send,
     <To as TableNameExpression>::LowerCaseTableNameExpression: AsRef<str>,
-    <To as TableNameExpression>::TableNameExpression: for<'q> Expression<'q, S>,
     <To::Id as CollectionId>::IdData:
         ::std::convert::From<i64> + Send + 'static + for<'q> Encode<'q, S> + Type<S> + Copy,
-    <To::Id as Identifier>::Identifier: for<'q> Expression<'q, S>,
     To::Id: Send
-        + Aliased<Aliased: for<'q> ManyExpressions<'q, S>>
+        + ExpressionsForOperation<
+            Scoped: for<'q> Expression<'q, S>,
+            ScopedAliased: for<'q> Expression<'q, S>,
+        >
         + for<'r> FromRowAlias<'r, S::Row, RData = <To::Id as CollectionId>::IdData>,
-    To: Aliased<Aliased: for<'q> ManyExpressions<'q, S>>,
     To: for<'r> FromRowAlias<'r, S::Row, RData = To::OutputData>,
     To::OutputData: Send,
-    ColumnEqual<<To::Id as Identifier>::Identifier, <To::Id as CollectionId>::IdData>: Send,
+    ColumnEqual<<To::Id as ExpressionsForOperation>::Scoped, Bind<<To::Id as CollectionId>::IdData>>: Send,
     i64: for<'q> Encode<'q, S> + Type<S> + Send,
 {
     async fn exec_operation(self, pool: &mut S::Connection) -> Self::Output {
@@ -241,8 +260,8 @@ where
             base: self.link.to.clone(),
             links: (),
             wheres: ColumnEqual {
-                col: self.link.to.id().identifier(),
-                eq: to_id,
+                col: self.link.to.id().scoped(),
+                eq: Bind(to_id),
             },
         }
         .exec_operation(&mut *pool)
@@ -254,12 +273,12 @@ where
 #[derive(Clone)]
 #[allow(dead_code)]
 pub struct SelectJunctionToIds<Key, From, To> {
-    link: ManyToMany<Key, From, To>,
+    link: ManyToMany<false, Key, From, To>,
     from_id: i64,
 }
 
 impl<Key, From, To> SelectJunctionToIds<Key, From, To> {
-    pub fn new(link: ManyToMany<Key, From, To>, from_id: i64) -> Self {
+    pub fn new(link: ManyToMany<false, Key, From, To>, from_id: i64) -> Self {
         Self { link, from_id }
     }
 }
@@ -292,13 +311,13 @@ where
         let to_col = self.link.to_junction_col_as_str();
 
         let (stmt, args) = StatementBuilder::<'_, S>::new(SelectStatement {
-            select_items: table(junction.clone()).col(to_col.clone()),
+            select_items: (table(junction.clone()).col(to_col.clone()),),
             from: table(junction.clone()),
             joins: (),
-            wheres: ColumnEqual {
+            wheres: (ColumnEqual {
                 col: table(junction).col(from_col),
-                eq: self.from_id,
-            },
+                eq: Bind(self.from_id),
+            },),
             group_by: (),
             order: (),
             limit: (),

@@ -4,17 +4,25 @@ use sqlx::Database;
 
 use crate::{
     database_extention::DatabaseExt,
-    extentions::common_expressions::raw_from_row::RawFromRow,
+    json_client::compat::{
+        insert_sets::{AggregatedUpdateSets, DynUpdateSets},
+        raw_from_row::RawFromRow,
+    },
     fix_executor::ExecutorTrait,
     from_row::FromRowData,
     gen_serde::{Serialize, json_serialize_side::JsonAsString},
     operations::{
         Operation, OperationOutput,
         boxed_operation::BoxedOperation,
-        insert_one::ConstraintViolation,
+        insert::ConstraintViolation,
         update::{UpdateLink, UpdateLinkData, UpdateLinkSplit},
+        operations_expressions_crossover::SelfPrescribedInsert,
     },
-    sqlx_query_builder::{basic_expressions::ManyFlat, trait_objects::ManyBoxedExpressions},
+    sqlx_query_builder::{
+        Expression, Join,
+        combinators::OptionalExpression,
+        trait_objects::{box_expression, BoxedExpression},
+    },
 };
 
 pub struct JsonUpdateLinksFromRow<S>(pub Vec<Box<dyn RawFromRow<S> + Send>>);
@@ -31,39 +39,29 @@ impl<'r, S: Database> crate::from_row::FromRowAlias<'r, S::Row> for JsonUpdateLi
             .collect()
     }
 
-    fn pre_alias(
+    fn str_alias(
         &self,
-        row: crate::from_row::RowPreAliased<'r, S::Row>,
+        row: crate::from_row::RowStrAliased<'r, S::Row>,
     ) -> Result<Self::RData, crate::from_row::FromRowError>
     where
         S::Row: sqlx::Row,
     {
         self.0
             .iter()
-            .map(|from_row| RawFromRow::dyn_pre_alias(&**from_row, row.clone()))
+            .map(|from_row| RawFromRow::dyn_str_alias(&**from_row, row.clone()))
             .collect()
     }
 
-    fn post_alias(
+    fn num_alias(
         &self,
-        _: crate::from_row::RowPostAliased<'r, S::Row>,
-    ) -> Result<Self::RData, crate::from_row::FromRowError>
-    where
-        S::Row: sqlx::Row,
-    {
-        panic!("to be deprecated")
-    }
-
-    fn two_alias(
-        &self,
-        row: crate::from_row::RowTwoAliased<'r, S::Row>,
+        row: crate::from_row::RowNumAliased<'r, S::Row>,
     ) -> Result<Self::RData, crate::from_row::FromRowError>
     where
         S::Row: sqlx::Row,
     {
         self.0
             .iter()
-            .map(|from_row| RawFromRow::dyn_two_alias(&**from_row, row.clone()))
+            .map(|from_row| RawFromRow::dyn_num_alias(&**from_row, row.clone()))
             .collect()
     }
 }
@@ -109,20 +107,20 @@ pub trait JsonUpdateOneLink<S: Database>: Send + Sync + 'static {
         pre_op_output: Box<dyn Any + Send>,
     ) -> Result<
         (
-            Box<dyn ManyBoxedExpressions<S> + Send>,
+            Box<dyn BoxedExpression<S> + Send>,
             Box<dyn Any + Send>,
             Box<dyn Any + Send>,
             Box<dyn Any + Send>,
         ),
         ConstraintViolation,
     >;
-    fn dyn_wheres(&self, wheres: Box<dyn Any + Send>) -> Box<dyn ManyBoxedExpressions<S> + Send>;
-    fn dyn_update_names(&self) -> Box<dyn ManyBoxedExpressions<S> + Send>;
+    fn dyn_wheres(&self, wheres: Box<dyn Any + Send>) -> Box<dyn BoxedExpression<S> + Send>;
+    fn dyn_update_names(&self) -> Box<dyn BoxedExpression<S> + Send>;
     fn dyn_update_values(
         &self,
         values: Box<dyn Any + Send>,
         pre_op_output: Box<dyn Any + Send>,
-    ) -> Box<dyn ManyBoxedExpressions<S> + Send>;
+    ) -> Box<dyn DynUpdateSets<S> + Send>;
     fn dyn_from_row(&self) -> Box<dyn RawFromRow<S> + Send>;
     fn dyn_post_op(
         &self,
@@ -149,19 +147,24 @@ pub trait JsonUpdateOneLink<S: Database>: Send + Sync + 'static {
 impl<T, S> JsonUpdateOneLink<S> for T
 where
     T: Send + Sync + 'static,
-    S: sqlx::Database,
+    S: sqlx::Database + DatabaseExt,
     T: UpdateLink,
     T::InitSplitForPreOp: 'static + Send,
     T::PreOp: Operation<S> + 'static,
-    T::PreOpSplitWheres: Send + 'static + ManyBoxedExpressions<S>,
+    T::PreOpSplitWheres: Send + 'static + OptionalExpression,
+    for<'e> Join<T::PreOpSplitWheres>: Expression<'e, S>,
     T::PreOpSplitValues: Send + 'static,
     T::PreOpSplitPostOp: Send + 'static,
     T::PreOpSplitTake: Send + 'static,
     T::InitSplitForWheres: Send + 'static,
-    T::UpdateWhere: Send + 'static + ManyBoxedExpressions<S>,
-    T::UpdateNames: Send + 'static + ManyBoxedExpressions<S>,
+    T::UpdateWhere: Send + 'static + OptionalExpression,
+    for<'e> Join<T::UpdateWhere>: Expression<'e, S>,
+    T::UpdateReturning: Send + 'static + OptionalExpression,
+    for<'e> Join<T::UpdateReturning>: Expression<'e, S>,
     T::InitSplitForUpdateValues: Send + 'static,
-    T::UpdateValues: Send + 'static + ManyBoxedExpressions<S>,
+    T::UpdateSets: Send + 'static + SelfPrescribedInsert,
+    <T::UpdateSets as SelfPrescribedInsert>::UpdateSets: Send + OptionalExpression,
+    for<'e> Join<<T::UpdateSets as SelfPrescribedInsert>::UpdateSets>: Expression<'e, S>,
     T::FromRow: Send + 'static + RawFromRow<S>,
     T::InitSplitPostOp: Send + 'static,
     T::PostOp: Operation<S> + Send + 'static,
@@ -178,7 +181,7 @@ where
         pre_op_output: Box<dyn Any + Send>,
     ) -> Result<
         (
-            Box<dyn ManyBoxedExpressions<S> + Send>,
+            Box<dyn BoxedExpression<S> + Send>,
             Box<dyn Any + Send>,
             Box<dyn Any + Send>,
             Box<dyn Any + Send>,
@@ -190,27 +193,27 @@ where
             .unwrap();
         let (wheres, values, post_op, take) = self.split_pre_op(*downcasted_pre_op_output)?;
         Ok((
-            Box::new(wheres),
+            box_expression(wheres, " AND "),
             Box::new(values),
             Box::new(post_op),
             Box::new(take),
         ))
     }
 
-    fn dyn_wheres(&self, wheres: Box<dyn Any + Send>) -> Box<dyn ManyBoxedExpressions<S> + Send> {
+    fn dyn_wheres(&self, wheres: Box<dyn Any + Send>) -> Box<dyn BoxedExpression<S> + Send> {
         let downcasted = wheres.downcast::<T::InitSplitForWheres>().unwrap();
-        Box::new(self.wheres(*downcasted))
+        box_expression(self.wheres(*downcasted), " AND ")
     }
 
-    fn dyn_update_names(&self) -> Box<dyn ManyBoxedExpressions<S> + Send> {
-        Box::new(self.update_names())
+    fn dyn_update_names(&self) -> Box<dyn BoxedExpression<S> + Send> {
+        box_expression(self.update_names(), ", ")
     }
 
     fn dyn_update_values(
         &self,
         values: Box<dyn Any + Send>,
         pre_op_output: Box<dyn Any + Send>,
-    ) -> Box<dyn ManyBoxedExpressions<S> + Send> {
+    ) -> Box<dyn DynUpdateSets<S> + Send> {
         let downcasted_values = values.downcast::<T::InitSplitForUpdateValues>().unwrap();
         let downcasted_pre_op_output = pre_op_output.downcast::<T::PreOpSplitValues>().unwrap();
         Box::new(self.update_values(*downcasted_values, *downcasted_pre_op_output))
@@ -298,7 +301,7 @@ where
         self.dyn_split_pre_op(pre_op_output)
     }
 
-    type PreOpSplitWheres = Box<dyn ManyBoxedExpressions<S> + Send>;
+    type PreOpSplitWheres = Box<dyn BoxedExpression<S> + Send>;
 
     type PreOpSplitValues = Box<dyn Any + Send>;
 
@@ -308,27 +311,27 @@ where
 
     type InitSplitForWheres = Box<dyn Any + Send>;
 
-    type UpdateWhere = Box<dyn ManyBoxedExpressions<S> + Send>;
+    type UpdateWhere = Box<dyn BoxedExpression<S> + Send>;
 
     fn wheres(&self, wheres: Self::InitSplitForWheres) -> Self::UpdateWhere {
         self.dyn_wheres(wheres)
     }
 
-    type UpdateNames = Box<dyn ManyBoxedExpressions<S> + Send>;
+    type UpdateReturning = Box<dyn BoxedExpression<S> + Send>;
 
-    fn update_names(&self) -> Self::UpdateNames {
+    fn update_names(&self) -> Self::UpdateReturning {
         self.dyn_update_names()
     }
 
     type InitSplitForUpdateValues = Box<dyn Any + Send>;
 
-    type UpdateValues = Box<dyn ManyBoxedExpressions<S> + Send>;
+    type UpdateSets = Box<dyn DynUpdateSets<S> + Send>;
 
     fn update_values(
         &self,
         values: Self::InitSplitForUpdateValues,
         pre_op_output: Self::PreOpSplitValues,
-    ) -> Self::UpdateValues {
+    ) -> Self::UpdateSets {
         self.dyn_update_values(values, pre_op_output)
     }
 
@@ -462,10 +465,10 @@ where
             take.push(t);
         }
 
-        Ok((ManyFlat(wheres), values, post_op, take))
+        Ok((wheres, values, post_op, take))
     }
 
-    type PreOpSplitWheres = ManyFlat<Vec<Box<dyn ManyBoxedExpressions<S> + Send>>>;
+    type PreOpSplitWheres = Vec<Box<dyn BoxedExpression<S> + Send>>;
 
     type PreOpSplitValues = Vec<Box<dyn Any + Send>>;
 
@@ -475,40 +478,40 @@ where
 
     type InitSplitForWheres = Vec<Box<dyn Any + Send>>;
 
-    type UpdateWhere = ManyFlat<Vec<Box<dyn ManyBoxedExpressions<S> + Send>>>;
+    type UpdateWhere = Vec<Box<dyn BoxedExpression<S> + Send>>;
 
     fn wheres(&self, wheres: Self::InitSplitForWheres) -> Self::UpdateWhere {
-        ManyFlat(
-            self.iter()
-                .zip(wheres)
-                .map(|(link, data)| link.as_ref().dyn_wheres(data))
-                .collect(),
-        )
+        self
+            .iter()
+            .zip(wheres)
+            .map(|(link, data)| link.as_ref().dyn_wheres(data))
+            .collect()
     }
 
-    type UpdateNames = ManyFlat<Vec<Box<dyn ManyBoxedExpressions<S> + Send>>>;
+    type UpdateReturning = Vec<Box<dyn BoxedExpression<S> + Send>>;
 
-    fn update_names(&self) -> Self::UpdateNames {
-        ManyFlat(
-            self.iter()
-                .map(|link| link.as_ref().dyn_update_names())
-                .collect(),
-        )
+    fn update_names(&self) -> Self::UpdateReturning {
+        self
+            .iter()
+            .map(|link| link.as_ref().dyn_update_names())
+            .collect()
     }
 
     type InitSplitForUpdateValues = Vec<Box<dyn Any + Send>>;
 
-    type UpdateValues = ManyFlat<Vec<Box<dyn ManyBoxedExpressions<S> + Send>>>;
+    type UpdateSets = AggregatedUpdateSets<S>;
 
     fn update_values(
         &self,
         values: Self::InitSplitForUpdateValues,
         pre_op_output: Self::PreOpSplitValues,
-    ) -> Self::UpdateValues {
-        ManyFlat(
+    ) -> Self::UpdateSets {
+        AggregatedUpdateSets(
             self.iter()
                 .zip(values.into_iter().zip(pre_op_output))
-                .map(|(link, (values, pre_op))| link.as_ref().dyn_update_values(values, pre_op))
+                .map(|(link, (values, pre_op))| {
+                    link.as_ref().dyn_update_values(values, pre_op)
+                })
                 .collect(),
         )
     }

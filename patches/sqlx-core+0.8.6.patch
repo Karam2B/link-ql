@@ -1,11 +1,13 @@
 diff --git a/src/lib.rs b/src/lib.rs
-index df4b2cc..f0bea2d 100644
+index df4b2cc..92ac7de 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -22,6 +22,46 @@
+@@ -21,6 +21,47 @@
+ // Allows an API be documented as only available in some specific platforms.
  // <https://doc.rust-lang.org/unstable-book/language-features/doc-cfg.html>
  #![cfg_attr(docsrs, feature(doc_cfg))]
- 
++#![allow(mismatched_lifetime_syntaxes)]
++
 +pub mod executor_2 {
 +    use crate::database::Database;
 +    use crate::executor::Execute;
@@ -45,7 +47,6 @@ index df4b2cc..f0bea2d 100644
 +            E: 'e + Execute<'e, Self::Database>;
 +    }
 +}
-+
+ 
  #[macro_use]
  pub mod ext;
- 

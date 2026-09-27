@@ -1,27 +1,8 @@
-//! todo list
-//!
-//! - [x] add where clase
-//! - [x] make sql macro
-//! - [x] clear out junk out of codebase
-//! - [x] basic migrate function
-//! - [ ] make readme
-//!
-//!
-//! - [ ] MAJOR REALEASE
-//!
-//! - [ ] create internal ticket system!
-//! - [ ] figure out nested where op
-//! - [ ] figure out nested links
-//! - [ ] json_client create link
-//! - [ ] json_client modify link
-//! - [ ] add many_to_many link type
-//! - [ ] add one_to_many link type
-//! - [ ] add date link type
-//! - [ ] add fetch many operation
-//! - [ ] add insert operation
-//! - [ ] add update operation
-//! - [ ] add delete operation
-//! - [ ] add more where operations
+#![cfg_attr(
+    feature = "nightly_rust_specialization",
+    allow(incomplete_features, unstable_syntax_pre_expansion)
+)]
+#![cfg_attr(feature = "nightly_rust_specialization", feature(min_specialization))]
 
 pub mod collections;
 pub mod connect_in_memory;
@@ -30,21 +11,29 @@ pub mod dyn_vec;
 pub mod execute;
 pub mod extend_sqlite;
 pub mod from_row;
-// pub mod json_client;
 pub mod json_value_cmp;
-pub mod links;
 pub mod on_migrate;
-pub mod operations;
 pub mod row_utils;
 pub mod schema;
 pub mod singleton;
 pub mod sqlx_query_builder;
-pub mod test_module;
 pub mod tuple_trait;
 pub mod update_mod;
 pub mod macros {
-    pub use claw_ql_macros::*;
+    pub use linked_sql_macros::*;
 }
+
+pub mod json_client;
+pub mod links;
+pub mod operations;
+
+#[doc(hidden)]
+pub use paste as paste_crate;
+
+mod test_module;
+
+// mod v2;
+// pub use v2::*;
 
 pub mod sqlx_error_handling {
     use sqlx::{Database, Error};
@@ -71,7 +60,7 @@ pub mod sqlx_error_handling {
                 Err(e) => match &e {
                     Error::RowNotFound => {
                         panic!(
-                            "internal bug: claw_ql should have cleared all sqlx error at this point: {:?}",
+                            "internal bug: linked_sql should have cleared all sqlx error at this point: {:?}",
                             e
                         );
                     }
@@ -88,16 +77,16 @@ pub mod debug_row {
     use core::fmt;
     use sqlx::{Column, Row};
 
-    use crate::from_row::{RowPostAliased, RowPreAliased, RowTwoAliased};
+    use crate::from_row::{RowNumAliased, RowStrAliased};
 
     pub struct DebugRow<T>(pub T);
-    impl<'r, R> fmt::Debug for DebugRow<RowTwoAliased<'r, R>>
+    impl<'r, R> fmt::Debug for DebugRow<RowNumAliased<'r, R>>
     where
         R: Row,
     {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let mut list = f.debug_list();
-            list.entry(&"two_alias");
+            list.entry(&"num_alias");
             list.entry(&self.0.str_alias);
             list.entry(&self.0.num_alias);
             for col in Row::columns(self.0.row) {
@@ -109,29 +98,13 @@ pub mod debug_row {
         }
     }
 
-    impl<'r, R> fmt::Debug for DebugRow<RowPreAliased<'r, R>>
+    impl<'r, R> fmt::Debug for DebugRow<RowStrAliased<'r, R>>
     where
         R: Row,
     {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             let mut list = f.debug_list();
-            list.entry(&"pre_alias");
-            list.entry(&self.0.alias);
-            for col in Row::columns(self.0.row) {
-                list.entry(&Column::name(col));
-                list.entry(&sqlx::TypeInfo::name(Column::type_info(col)));
-            }
-            list.finish()?;
-            Ok(())
-        }
-    }
-    impl<'r, R> fmt::Debug for DebugRow<RowPostAliased<'r, R>>
-    where
-        R: Row,
-    {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            let mut list = f.debug_list();
-            list.entry(&"post_alias");
+            list.entry(&"str_alias");
             list.entry(&self.0.alias);
             for col in Row::columns(self.0.row) {
                 list.entry(&Column::name(col));
@@ -271,6 +244,18 @@ pub mod fix_executor {
         S: Database,
         for<'e> &'e mut S::Connection: sqlx::Executor<'e, Database = S>,
     {
+        fn fetch_optional<'e, E: 'e + Execute<'e, Self>>(
+            conn: &mut Self::Connection,
+            execute: E,
+        ) -> BoxFuture<'e, Result<Option<Self::Row>, sqlx::Error>> {
+            // this unsafe code is not an issue
+            // because the problem is in sqlx::Executor interface
+
+            // Executor2 does the same thing, without unsafe code
+            // therefore this will not produce any lifetime issues
+            let break_executor = unsafe { &mut *(conn as *mut Self::Connection) };
+            sqlx::Executor::fetch_optional(break_executor, execute)
+        }
         fn fetch_all<'e, E: 'e + Execute<'e, Self>>(
             conn: &mut Self::Connection,
             execute: E,
@@ -323,6 +308,53 @@ pub mod fix_executor {
         ) -> BoxFuture<'e, Result<<Self as Database>::QueryResult, sqlx::Error>> {
             let keep_conn_out = sqlx::executor_2::Executor2::execute(conn, execute);
             Box::pin(async move { keep_conn_out.await })
+        }
+    }
+
+    #[cfg(test)]
+    mod test {
+        use crate::{connect_in_memory::ConnectInMemory, execute::Executable};
+        use sqlx::{Row, Sqlite};
+
+        use super::ExecutorTrait;
+
+        #[tokio::test]
+        async fn main() {
+            let mut conn = Sqlite::in_memory_connection().await;
+
+            sqlx::query(
+                "
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL
+        );
+
+        INSERT INTO users (name) VALUES ('John');
+        INSERT INTO users (name) VALUES ('Jane');
+        INSERT INTO users (name) VALUES ('Jim');
+        INSERT INTO users (name) VALUES ('Jill');
+        INSERT INTO users (name) VALUES ('Jack');
+        INSERT INTO users (name) VALUES ('Jill');
+        ",
+            )
+            .execute(&mut conn)
+            .await
+            .unwrap();
+
+            let v = Sqlite::fetch_all(
+                &mut conn,
+                Executable {
+                    string: "SELECT * FROM users",
+                    arguments: Default::default(),
+                },
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<Vec<_>>();
+
+            pretty_assertions::assert_eq!(v, vec!["John", "Jane", "Jim", "Jill", "Jack", "Jill"]);
         }
     }
 }
@@ -498,6 +530,29 @@ pub mod sub_arc {
         }
     }
 
+    mod impl_expression_for_arc_sub_str {
+        use crate::{
+            database_extention::DatabaseExt,
+            sqlx_query_builder::{OpExpression, RefExpression, RefOpExpression, StatementBuilder},
+        };
+
+        impl OpExpression for crate::sub_arc::ArcSubStr {}
+
+        impl RefOpExpression for crate::sub_arc::ArcSubStr {}
+
+        impl<S> RefExpression<'_, S> for crate::sub_arc::ArcSubStr
+        where
+            S: DatabaseExt,
+        {
+            fn ref_expression<'q>(&self, ctx: &mut StatementBuilder<'q, S>)
+            where
+                S: DatabaseExt,
+            {
+                ctx.sanitize(self.as_str());
+            }
+        }
+    }
+
     #[cfg(test)]
     #[allow(unused)]
     mod alternaive_idea {
@@ -636,11 +691,8 @@ pub mod is_null {
     }
 
     #[cfg(feature = "nightly_rust_specialization")]
-    impl<T> IsNull for T {
-        default fn is_null() -> bool {
-            false
-        }
-    }
+    #[path = "is_null_specialization.rs"]
+    mod is_null_specialization;
 
     #[cfg(not(feature = "nightly_rust_specialization"))]
     mod impl_is_null_no_spectialization {
@@ -682,10 +734,16 @@ pub mod is_null {
     }
 }
 
-#[cfg(all(test, feature = "trace"))]
-mod track_sqlx_query;
+#[cfg(feature = "trace")]
+pub mod track_sqlx_query;
 
-mod gen_serde;
+#[doc(hidden)]
+pub mod gen_serde;
+
+/// Browser WASM bindings (`hello_world`, `execute_select_example`, …).
+/// Built via `wasm-pack` from `src/bin/run_wasm.rs`; not linked into the native library.
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 // usefull old utils, they all in utils
 // folder, I don't want to delete

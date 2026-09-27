@@ -1,25 +1,26 @@
-    use sqlx::Sqlite;
+use sqlx::Sqlite;
 
-    use crate::{
-        connect_in_memory::ConnectInMemory, json_client::client_interface::Client,
-        track_sqlx_query::{assert_sql_eq, watch_sqlx_calls},
-    };
+use crate::{
+    connect_in_memory::ConnectInMemory,
+    json_client::client_interface::Client,
+    track_sqlx_query::{assert_sql_eq, watch_sqlx_calls},
+};
 
-    use super::test_utilities::{
-        add_category_collection, add_todo_collection, clear_timestams, setup_todo_collection,
-        setup_todo_with_category_link, todo_is_one_to_many_with_category, todo_is_timestamped,
-    };
+use super::test_utilities::{
+    add_category_collection, add_todo_collection, clear_timestams, setup_todo_collection,
+    setup_todo_with_category_link, todo_is_one_to_many_with_category, todo_is_timestamped,
+};
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_insert_one() {
-        watch_sqlx_calls(async |scope, cache| {
+#[tokio::test(flavor = "current_thread")]
+async fn test_insert_one() {
+    watch_sqlx_calls(async |actions| {
             let pool = Sqlite::in_memory_pool().await;
             let (client, ex) = Client::new_sqlx_db(pool);
             let client = client.into_string_client();
 
-            scope.spawn(ex.run());
+            actions.spawn(ex.run());
 
-            setup_todo_collection(&client, &cache).await;
+            setup_todo_collection(&client, &actions).await;
 
             client
                 .exec(
@@ -42,7 +43,7 @@
                 .await;
 
             assert_sql_eq(
-                cache.drain(),
+                actions.take(),
                 vec![
                     r#"PRAGMA foreign_keys = ON;"#.to_string(),
                     r#"INSERT INTO "Todo" ("title", "description", "done") VALUES ($1, $2, $3) RETURNING "id", "title", "description", "done";"#.to_string(),
@@ -50,18 +51,18 @@
             );
         })
         .await;
-    }
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn insert_many_inserts_batch_on_one_connection() {
-        watch_sqlx_calls(async |scope, cache| {
+#[tokio::test(flavor = "current_thread")]
+async fn insert_many_inserts_batch_on_one_connection() {
+    watch_sqlx_calls(async |actions| {
             let pool = Sqlite::in_memory_pool().await;
             let (client, ex) = Client::new_sqlx_db(pool);
             let client = client.into_string_client();
 
-            scope.spawn(ex.run());
+            actions.spawn(ex.run());
 
-            setup_todo_collection(&client, &cache).await;
+            setup_todo_collection(&client, &actions).await;
 
             client
                 .exec(
@@ -96,7 +97,7 @@
                 .await;
 
             assert_sql_eq(
-                cache.drain(),
+                actions.take(),
                 vec![
                     r#"PRAGMA foreign_keys = ON;"#.to_string(),
                     r#"INSERT INTO "Todo" ("title", "description", "done") VALUES ($1, $2, $3) RETURNING "id", "title", "description", "done";"#.to_string(),
@@ -105,20 +106,20 @@
             );
         })
         .await;
-    }
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn insert_many_returns_items_with_ids_and_attributes() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn insert_many_returns_items_with_ids_and_attributes() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
+    add_todo_collection(&client).await;
 
-        let result = client
-            .exec(
-                r#"
+    let result = client
+        .exec(
+            r#"
 {
     "op": "insert_many",
     "body": {
@@ -144,28 +145,28 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        pretty_assertions::assert_eq!(
-            result,
-            r#"{"output":{"items":[{"id":1,"attributes":{"description":"d1","done":false,"title":"first"},"links":[]},{"id":2,"attributes":{"description":"d2","done":true,"title":"second"},"links":[]}]}}"#
-        );
-    }
+    pretty_assertions::assert_eq!(
+        result,
+        r#"{"output":{"items":[{"id":1,"attributes":{"description":"d1","done":false,"title":"first"},"links":[]},{"id":2,"attributes":{"description":"d2","done":true,"title":"second"},"links":[]}]}}"#
+    );
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn insert_many_empty_items_returns_invalid_data() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn insert_many_empty_items_returns_invalid_data() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
+    add_todo_collection(&client).await;
 
-        let result = client
-            .exec(
-                r#"
+    let result = client
+        .exec(
+            r#"
 {
     "op": "insert_many",
     "body": {
@@ -174,59 +175,59 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        pretty_assertions::assert_eq!(result, r#"{"error":"InvalidData"}"#);
-    }
+    pretty_assertions::assert_eq!(result, r#"{"error":"InvalidData"}"#);
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn exec_returns_invalid_input_for_non_json() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn exec_returns_invalid_input_for_non_json() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        let result = client.exec(r#"not json"#.to_string()).await;
-        pretty_assertions::assert_eq!(result, r#"{"error":"invalid_input"}"#);
-    }
+    let result = client.exec(r#"not json"#.to_string()).await;
+    pretty_assertions::assert_eq!(result, r#"{"error":"invalid_input"}"#);
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn exec_returns_invalid_body_for_malformed_add_collection() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn exec_returns_invalid_body_for_malformed_add_collection() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        let result = client
-            .exec(
-                r#"
+    let result = client
+        .exec(
+            r#"
 {
     "op": "add_collection",
     "body": ["todo", []]
 }
 "#
-                .to_string(),
-            )
-            .await;
-        pretty_assertions::assert_eq!(result, r#"{"error":"invalid_body"}"#);
-    }
+            .to_string(),
+        )
+        .await;
+    pretty_assertions::assert_eq!(result, r#"{"error":"invalid_body"}"#);
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn add_collection_returns_null_output() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn add_collection_returns_null_output() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
-        add_category_collection(&client).await;
+    add_todo_collection(&client).await;
+    add_category_collection(&client).await;
 
-        pretty_assertions::assert_eq!(
-            client
-                .exec(
-                    r#"
+    pretty_assertions::assert_eq!(
+        client
+            .exec(
+                r#"
 {
     "op": "add_collection",
     "body": {
@@ -237,27 +238,27 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await,
-            r#"{"output":null}"#
-        );
-    }
+                .to_string(),
+            )
+            .await,
+        r#"{"output":null}"#
+    );
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn add_collection_rejects_duplicate() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn add_collection_rejects_duplicate() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
-        add_category_collection(&client).await;
-        todo_is_one_to_many_with_category(&client).await;
+    add_todo_collection(&client).await;
+    add_category_collection(&client).await;
+    todo_is_one_to_many_with_category(&client).await;
 
-        let result = client
-            .exec(
-                r#"
+    let result = client
+        .exec(
+            r#"
 {
     "op": "add_collection",
     "body": {
@@ -268,84 +269,84 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
-        pretty_assertions::assert_eq!(result, r#"{"error":"CollectionAlreadyExists"}"#);
-    }
+            .to_string(),
+        )
+        .await;
+    pretty_assertions::assert_eq!(result, r#"{"error":"CollectionAlreadyExists"}"#);
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn add_link_rejects_duplicate() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn add_link_rejects_duplicate() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
-        add_category_collection(&client).await;
-        todo_is_one_to_many_with_category(&client).await;
+    add_todo_collection(&client).await;
+    add_category_collection(&client).await;
+    todo_is_one_to_many_with_category(&client).await;
 
-        let result = client
-            .exec(
-                r#"
+    let result = client
+        .exec(
+            r#"
 {
     "op": "add_link",
     "body": {
-        "ty": "optional_to_many",
+        "ty": "one_to_many",
         "from": "todo",
         "to": "category"
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
-        pretty_assertions::assert_eq!(result, r#"{"error":"LinkAlreadyExists"}"#);
-    }
+            .to_string(),
+        )
+        .await;
+    pretty_assertions::assert_eq!(result, r#"{"error":"LinkAlreadyExists"}"#);
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn add_link_rejects_missing_collection() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn add_link_rejects_missing_collection() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
-        add_category_collection(&client).await;
-        todo_is_one_to_many_with_category(&client).await;
+    add_todo_collection(&client).await;
+    add_category_collection(&client).await;
+    todo_is_one_to_many_with_category(&client).await;
 
-        let result = client
-            .exec(
-                r#"
+    let result = client
+        .exec(
+            r#"
 {
     "op": "add_link",
     "body": {
-        "ty": "optional_to_many",
+        "ty": "one_to_many",
         "from": "todo",
         "to": "missing"
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
-        pretty_assertions::assert_eq!(result, r#"{"error":"CollectionNotFound"}"#);
-    }
+            .to_string(),
+        )
+        .await;
+    pretty_assertions::assert_eq!(result, r#"{"error":"CollectionNotFound"}"#);
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn insert_one_category_returns_id_and_attributes() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn insert_one_category_returns_id_and_attributes() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
-        add_category_collection(&client).await;
-        todo_is_one_to_many_with_category(&client).await;
+    add_todo_collection(&client).await;
+    add_category_collection(&client).await;
+    todo_is_one_to_many_with_category(&client).await;
 
-        let result = client
-            .exec(
-                r#"
+    let result = client
+        .exec(
+            r#"
 {
     "op": "insert_one",
     "body": {
@@ -355,28 +356,28 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        pretty_assertions::assert_eq!(
-            result,
-            r#"{"output":{"id":1,"attributes":{"title":"category_1"},"links":[]}}"#
-        );
-    }
+    pretty_assertions::assert_eq!(
+        result,
+        r#"{"output":{"id":1,"attributes":{"title":"category_1"},"links":[]}}"#
+    );
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn update_one_updates_todo_by_id() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn update_one_updates_todo_by_id() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
+    add_todo_collection(&client).await;
 
-        client
-            .exec(
-                r#"
+    client
+        .exec(
+            r#"
 {
     "op": "insert_one",
     "body": {
@@ -390,13 +391,13 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        let result = client
-            .exec(
-                r#"
+    let result = client
+        .exec(
+            r#"
 {
     "op": "update_one",
     "body": {
@@ -407,30 +408,30 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        pretty_assertions::assert_eq!(
-            result,
-            r#"{"output":{"id":1,"attributes":{"description":"desc","done":false,"title":"after_update"},"links":[]}}"#
-        );
-    }
+    pretty_assertions::assert_eq!(
+        result,
+        r#"{"output":{"id":1,"attributes":{"description":"desc","done":false,"title":"after_update"},"links":[]}}"#
+    );
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_one_returns_todo_with_optional_to_many_link() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn fetch_one_returns_todo_with_one_to_many_link() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
-        add_category_collection(&client).await;
-        todo_is_one_to_many_with_category(&client).await;
+    add_todo_collection(&client).await;
+    add_category_collection(&client).await;
+    todo_is_one_to_many_with_category(&client).await;
 
-        client
-            .exec(
-                r#"
+    client
+        .exec(
+            r#"
 {
     "op": "insert_one",
     "body": {
@@ -440,13 +441,13 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        client
-            .exec(
-                r#"
+    client
+        .exec(
+            r#"
 {
     "op": "insert_one",
     "body": {
@@ -462,13 +463,13 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        let result = client
-            .exec(
-                r#"
+    let result = client
+        .exec(
+            r#"
 {
     "op": "fetch_one",
     "body": {
@@ -476,35 +477,35 @@
         "id": 1,
         "filters": [],
         "links": [
-            { "ty": "optional_to_many", "to": "category" }
+            { "ty": "one_to_many", "to": "category" }
         ]
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        pretty_assertions::assert_eq!(
-            result,
-            r#"{"output":{"id":1,"attributes":{"description":"desc","done":true,"title":"todo_1"},"links":[{"id":1,"attributes":{"title":"work"}}]}}"#
-        );
-    }
+    pretty_assertions::assert_eq!(
+        result,
+        r#"{"output":{"id":1,"attributes":{"description":"desc","done":true,"title":"todo_1"},"links":[{"id":1,"attributes":{"title":"work"}}]}}"#
+    );
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_one_from_category_returns_many_todos() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn fetch_one_from_category_returns_many_todos() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
-        add_category_collection(&client).await;
-        todo_is_one_to_many_with_category(&client).await;
+    add_todo_collection(&client).await;
+    add_category_collection(&client).await;
+    todo_is_one_to_many_with_category(&client).await;
 
-        client
-            .exec(
-                r#"
+    client
+        .exec(
+            r#"
 {
     "op": "insert_one",
     "body": {
@@ -514,13 +515,13 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        client
-            .exec(
-                r#"
+    client
+        .exec(
+            r#"
 {
     "op": "insert_one",
     "body": {
@@ -536,13 +537,13 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        client
-            .exec(
-                r#"
+    client
+        .exec(
+            r#"
 {
     "op": "insert_one",
     "body": {
@@ -558,13 +559,13 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        let result = client
-            .exec(
-                r#"
+    let result = client
+        .exec(
+            r#"
 {
     "op": "fetch_one",
     "body": {
@@ -572,36 +573,36 @@
         "id": 1,
         "filters": [],
         "links": [
-            { "ty": "optional_to_many", "to": "todo" }
+            { "ty": "one_to_many", "to": "todo" }
         ]
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        pretty_assertions::assert_eq!(
-            result,
-            r#"{"output":{"id":1,"attributes":{"title":"work"},"links":[{"many_output":[{"id":1,"attributes":{"description":"desc","done":true,"title":"todo_1"}},{"id":2,"attributes":{"description":null,"done":false,"title":"todo_2"}}]}]}}"#
-        );
-    }
+    pretty_assertions::assert_eq!(
+        result,
+        r#"{"output":{"id":1,"attributes":{"title":"work"},"links":[{"many_output":[{"id":1,"attributes":{"description":"desc","done":true,"title":"todo_1"}},{"id":2,"attributes":{"description":null,"done":false,"title":"todo_2"}}]}]}}"#
+    );
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_many_returns_inserted_todo_with_timestamp_link() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool.clone());
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn fetch_many_returns_inserted_todo_with_timestamp_link() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool.clone());
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
-        add_category_collection(&client).await;
-        todo_is_one_to_many_with_category(&client).await;
-        todo_is_timestamped(&client).await;
+    add_todo_collection(&client).await;
+    add_category_collection(&client).await;
+    todo_is_one_to_many_with_category(&client).await;
+    todo_is_timestamped(&client).await;
 
-        client
-            .exec(
-                r#"
+    client
+        .exec(
+            r#"
 {
     "op": "insert_one",
     "body": {
@@ -615,14 +616,14 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
-        clear_timestams(pool.clone()).await;
+            .to_string(),
+        )
+        .await;
+    clear_timestams(pool.clone()).await;
 
-        let result = client
-            .exec(
-                r#"
+    let result = client
+        .exec(
+            r#"
 {
     "op": "fetch_many",
     "body": {
@@ -635,29 +636,29 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        pretty_assertions::assert_eq!(
-            result,
-            r#"{"output":{"items":[{"id":1,"attributes":{"description":"description_1","done":true,"title":"todo_1"},"links":[{"created_at":"demo created_at","updated_at":"demo updated_at"}]}],"next_item":null}}"#
-        );
-    }
+    pretty_assertions::assert_eq!(
+        result,
+        r#"{"output":{"items":[{"id":1,"attributes":{"description":"description_1","done":true,"title":"todo_1"},"links":[{"created_at":"demo created_at","updated_at":"demo updated_at"}]}],"next_item":null}}"#
+    );
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_many_col_eq_filter() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool.clone());
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn fetch_many_col_eq_filter() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool.clone());
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
-        todo_is_timestamped(&client).await;
+    add_todo_collection(&client).await;
+    todo_is_timestamped(&client).await;
 
-        client
-            .exec(
-                r#"
+    client
+        .exec(
+            r#"
 {
     "op": "insert_one",
     "body": {
@@ -670,13 +671,13 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        client
-            .exec(
-                r#"
+    client
+        .exec(
+            r#"
 {
     "op": "insert_one",
     "body": {
@@ -689,14 +690,14 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
-        clear_timestams(pool).await;
+            .to_string(),
+        )
+        .await;
+    clear_timestams(pool).await;
 
-        let matching = client
-            .exec(
-                r#"
+    let matching = client
+        .exec(
+            r#"
 {
     "op": "fetch_many",
     "body": {
@@ -711,17 +712,17 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
-        pretty_assertions::assert_eq!(
-            matching,
-            r#"{"output":{"items":[{"id":1,"attributes":{"description":null,"done":true,"title":"done_todo"},"links":[{"created_at":"demo created_at","updated_at":"demo updated_at"}]}],"next_item":null}}"#
-        );
+            .to_string(),
+        )
+        .await;
+    pretty_assertions::assert_eq!(
+        matching,
+        r#"{"output":{"items":[{"id":1,"attributes":{"description":null,"done":true,"title":"done_todo"},"links":[{"created_at":"demo created_at","updated_at":"demo updated_at"}]}],"next_item":null}}"#
+    );
 
-        let not_done = client
-            .exec(
-                r#"
+    let not_done = client
+        .exec(
+            r#"
 {
     "op": "fetch_many",
     "body": {
@@ -736,28 +737,28 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
-        pretty_assertions::assert_eq!(
-            not_done,
-            r#"{"output":{"items":[{"id":2,"attributes":{"description":null,"done":false,"title":"open_todo"},"links":[{"created_at":"demo created_at","updated_at":"demo updated_at"}]}],"next_item":null}}"#
-        );
-    }
+            .to_string(),
+        )
+        .await;
+    pretty_assertions::assert_eq!(
+        not_done,
+        r#"{"output":{"items":[{"id":2,"attributes":{"description":null,"done":false,"title":"open_todo"},"links":[{"created_at":"demo created_at","updated_at":"demo updated_at"}]}],"next_item":null}}"#
+    );
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_many_rejects_unknown_filter_field() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn fetch_many_rejects_unknown_filter_field() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
-        todo_is_timestamped(&client).await;
+    add_todo_collection(&client).await;
+    todo_is_timestamped(&client).await;
 
-        let result = client
-            .exec(
-                r#"
+    let result = client
+        .exec(
+            r#"
 {
     "op": "fetch_many",
     "body": {
@@ -772,25 +773,25 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
-        pretty_assertions::assert_eq!(result, r#"{"error":"InvalidFilter"}"#);
-    }
+            .to_string(),
+        )
+        .await;
+    pretty_assertions::assert_eq!(result, r#"{"error":"InvalidFilter"}"#);
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_many_rejects_filter_type_mismatch() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn fetch_many_rejects_filter_type_mismatch() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
-        todo_is_timestamped(&client).await;
+    add_todo_collection(&client).await;
+    todo_is_timestamped(&client).await;
 
-        let result = client
-            .exec(
-                r#"
+    let result = client
+        .exec(
+            r#"
 {
     "op": "fetch_many",
     "body": {
@@ -805,25 +806,25 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
-        pretty_assertions::assert_eq!(result, r#"{"error":"InvalidFilter"}"#);
-    }
+            .to_string(),
+        )
+        .await;
+    pretty_assertions::assert_eq!(result, r#"{"error":"InvalidFilter"}"#);
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn fetch_many_col_ne_contains_and_composite_filters() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool.clone());
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn fetch_many_col_ne_contains_and_composite_filters() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool.clone());
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        add_todo_collection(&client).await;
-        todo_is_timestamped(&client).await;
+    add_todo_collection(&client).await;
+    todo_is_timestamped(&client).await;
 
-        client
-            .exec(
-                r#"
+    client
+        .exec(
+            r#"
 {
     "op": "insert_one",
     "body": {
@@ -833,13 +834,13 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        client
-            .exec(
-                r#"
+    client
+        .exec(
+            r#"
 {
     "op": "insert_one",
     "body": {
@@ -849,15 +850,15 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        clear_timestams(pool).await;
+    clear_timestams(pool).await;
 
-        let not_done = client
-            .exec(
-                r#"
+    let not_done = client
+        .exec(
+            r#"
 {
     "op": "fetch_many",
     "body": {
@@ -870,17 +871,17 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
-        pretty_assertions::assert_eq!(
-            not_done,
-            r#"{"output":{"items":[{"id":2,"attributes":{"description":null,"done":false,"title":"open_todo"},"links":[{"created_at":"demo created_at","updated_at":"demo updated_at"}]}],"next_item":null}}"#
-        );
+            .to_string(),
+        )
+        .await;
+    pretty_assertions::assert_eq!(
+        not_done,
+        r#"{"output":{"items":[{"id":2,"attributes":{"description":null,"done":false,"title":"open_todo"},"links":[{"created_at":"demo created_at","updated_at":"demo updated_at"}]}],"next_item":null}}"#
+    );
 
-        let contains = client
-            .exec(
-                r#"
+    let contains = client
+        .exec(
+            r#"
 {
     "op": "fetch_many",
     "body": {
@@ -893,17 +894,17 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
-        pretty_assertions::assert_eq!(
-            contains,
-            r#"{"output":{"items":[{"id":1,"attributes":{"description":null,"done":true,"title":"urgent_todo"},"links":[{"created_at":"demo created_at","updated_at":"demo updated_at"}]}],"next_item":null}}"#
-        );
+            .to_string(),
+        )
+        .await;
+    pretty_assertions::assert_eq!(
+        contains,
+        r#"{"output":{"items":[{"id":1,"attributes":{"description":null,"done":true,"title":"urgent_todo"},"links":[{"created_at":"demo created_at","updated_at":"demo updated_at"}]}],"next_item":null}}"#
+    );
 
-        let composite = client
-            .exec(
-                r#"
+    let composite = client
+        .exec(
+            r#"
 {
     "op": "fetch_many",
     "body": {
@@ -922,25 +923,25 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
-        pretty_assertions::assert_eq!(
-            composite,
-            r#"{"output":{"items":[{"id":1,"attributes":{"description":null,"done":true,"title":"urgent_todo"},"links":[{"created_at":"demo created_at","updated_at":"demo updated_at"}]},{"id":2,"attributes":{"description":null,"done":false,"title":"open_todo"},"links":[{"created_at":"demo created_at","updated_at":"demo updated_at"}]}],"next_item":null}}"#
-        );
-    }
+            .to_string(),
+        )
+        .await;
+    pretty_assertions::assert_eq!(
+        composite,
+        r#"{"output":{"items":[{"id":1,"attributes":{"description":null,"done":true,"title":"urgent_todo"},"links":[{"created_at":"demo created_at","updated_at":"demo updated_at"}]},{"id":2,"attributes":{"description":null,"done":false,"title":"open_todo"},"links":[{"created_at":"demo created_at","updated_at":"demo updated_at"}]}],"next_item":null}}"#
+    );
+}
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn add_collection_int_float_array_and_filter_by_int() {
-        let pool = Sqlite::in_memory_pool().await;
-        let (client, ex) = Client::new_sqlx_db(pool);
-        let client = client.into_string_client();
-        let _executor = tokio::spawn(ex.run());
+#[tokio::test(flavor = "current_thread")]
+async fn add_collection_int_float_array_and_filter_by_int() {
+    let pool = Sqlite::in_memory_pool().await;
+    let (client, ex) = Client::new_sqlx_db(pool);
+    let client = client.into_string_client();
+    let _executor = tokio::spawn(ex.run());
 
-        client
-            .exec(
-                r#"
+    client
+        .exec(
+            r#"
 {
     "op": "add_collection",
     "body": {
@@ -954,13 +955,13 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        client
-            .exec(
-                r#"
+    client
+        .exec(
+            r#"
 {
     "op": "insert_one",
     "body": {
@@ -975,13 +976,13 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        client
-            .exec(
-                r#"
+    client
+        .exec(
+            r#"
 {
     "op": "insert_one",
     "body": {
@@ -996,13 +997,13 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        let result = client
-            .exec(
-                r#"
+    let result = client
+        .exec(
+            r#"
 {
     "op": "fetch_many",
     "body": {
@@ -1021,43 +1022,44 @@
     }
 }
 "#
-                .to_string(),
-            )
-            .await;
+            .to_string(),
+        )
+        .await;
 
-        pretty_assertions::assert_eq!(
-            result,
-            r#"{"output":{"items":[{"id":2,"attributes":{"label":"high","priority":10,"score":9.9,"tags":["z"]},"links":[]}],"next_item":null}}"#
-        );
-    }
+    pretty_assertions::assert_eq!(
+        result,
+        r#"{"output":{"items":[{"id":2,"attributes":{"label":"high","priority":10,"score":9.9,"tags":["z"]},"links":[]}],"next_item":null}}"#
+    );
+}
 
-    mod insert_one {
-        use sqlx::Sqlite;
+mod insert_one {
+    use sqlx::Sqlite;
 
-        use crate::{
-            connect_in_memory::ConnectInMemory, json_client::client_interface::Client,
-            track_sqlx_query::{assert_sql_eq, watch_sqlx_calls},
-        };
+    use crate::{
+        connect_in_memory::ConnectInMemory,
+        json_client::client_interface::Client,
+        track_sqlx_query::{assert_sql_eq, watch_sqlx_calls},
+    };
 
-        use crate::json_client::test_utilities::{
-            add_category_collection, add_todo_collection, setup_todo_with_category_link,
-            todo_is_one_to_many_with_category,
-        };
+    use crate::json_client::test_utilities::{
+        add_category_collection, add_todo_collection, setup_todo_with_category_link,
+        todo_is_one_to_many_with_category,
+    };
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn set_id_links_existing_category() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
+    #[tokio::test(flavor = "current_thread")]
+    async fn set_id_links_existing_category() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-            add_todo_collection(&client).await;
-            add_category_collection(&client).await;
-            todo_is_one_to_many_with_category(&client).await;
+        add_todo_collection(&client).await;
+        add_category_collection(&client).await;
+        todo_is_one_to_many_with_category(&client).await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -1067,13 +1069,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -1089,30 +1091,30 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            pretty_assertions::assert_eq!(
-                result,
-                r#"{"output":{"id":1,"attributes":{"description":"linked","done":true,"title":"todo_with_category"},"links":[{"id":1,"attributes":{"title":"existing_category"}}]}}"#
-            );
-        }
+        pretty_assertions::assert_eq!(
+            result,
+            r#"{"output":{"id":1,"attributes":{"description":"linked","done":true,"title":"todo_with_category"},"links":[{"id":1,"attributes":{"title":"existing_category"}}]}}"#
+        );
+    }
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn set_new_creates_category_and_links() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
+    #[tokio::test(flavor = "current_thread")]
+    async fn set_new_creates_category_and_links() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-            add_todo_collection(&client).await;
-            add_category_collection(&client).await;
-            todo_is_one_to_many_with_category(&client).await;
+        add_todo_collection(&client).await;
+        add_category_collection(&client).await;
+        todo_is_one_to_many_with_category(&client).await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -1128,26 +1130,26 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            pretty_assertions::assert_eq!(
-                result,
-                r#"{"output":{"id":1,"attributes":{"description":"set_new","done":false,"title":"todo_with_new_category"},"links":[{"id":1,"attributes":{"title":"new_category"}}]}}"#
-            );
-        }
+        pretty_assertions::assert_eq!(
+            result,
+            r#"{"output":{"id":1,"attributes":{"description":"set_new","done":false,"title":"todo_with_new_category"},"links":[{"id":1,"attributes":{"title":"new_category"}}]}}"#
+        );
+    }
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn set_id_sql() {
-            watch_sqlx_calls(async |scope, cache| {
+    #[tokio::test(flavor = "current_thread")]
+    async fn set_id_sql() {
+        watch_sqlx_calls(async |actions| {
                 let pool = Sqlite::in_memory_pool().await;
                 let (client, ex) = Client::new_sqlx_db(pool);
                 let client = client.into_string_client();
 
-                scope.spawn(ex.run());
+                actions.spawn(ex.run());
 
-                setup_todo_with_category_link(&client, &cache).await;
+                setup_todo_with_category_link(&client, &actions).await;
 
                 client
                     .exec(
@@ -1166,7 +1168,7 @@
                     .await;
 
                 assert_sql_eq(
-                    cache.drain(),
+                    actions.take(),
                     vec![
                         "INSERT INTO \"Category\" (\"title\") VALUES ($1) RETURNING \"id\", \"title\";".to_string(),
                     ]
@@ -1194,7 +1196,7 @@
                     .await;
 
                 assert_sql_eq(
-                    cache.drain(),
+                    actions.take(),
                     vec![
                         "INSERT INTO \"Todo\" (\"title\", \"description\", \"done\", \"fk_category_def\") VALUES ($1, $2, $3, $4) RETURNING \"id\", \"title\", \"description\", \"done\", \"fk_category_def\";".to_string(),
                         "SELECT \"Category\".\"id\" AS \"iid\", \"Category\".\"title\" AS \"btitle\" FROM \"Category\" WHERE \"id\" = $1;".to_string(),
@@ -1202,36 +1204,37 @@
                 );
             })
             .await;
-        }
     }
+}
 
-    mod update_one {
-        use sqlx::Sqlite;
+mod update_one {
+    use sqlx::Sqlite;
 
-        use crate::{
-            connect_in_memory::ConnectInMemory, json_client::client_interface::Client,
-            track_sqlx_query::{assert_sql_eq, watch_sqlx_calls},
-        };
+    use crate::{
+        connect_in_memory::ConnectInMemory,
+        json_client::client_interface::Client,
+        track_sqlx_query::{assert_sql_eq, watch_sqlx_calls},
+    };
 
-        use crate::json_client::test_utilities::{
-            add_category_collection, add_todo_collection, setup_todo_with_category_link,
-            todo_is_one_to_many_with_category,
-        };
+    use crate::json_client::test_utilities::{
+        add_category_collection, add_todo_collection, setup_todo_with_category_link,
+        todo_is_one_to_many_with_category,
+    };
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn set_id_links_existing_category() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
+    #[tokio::test(flavor = "current_thread")]
+    async fn set_id_links_existing_category() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-            add_todo_collection(&client).await;
-            add_category_collection(&client).await;
-            todo_is_one_to_many_with_category(&client).await;
+        add_todo_collection(&client).await;
+        add_category_collection(&client).await;
+        todo_is_one_to_many_with_category(&client).await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -1241,13 +1244,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -1261,13 +1264,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "update_one",
     "body": {
@@ -1280,30 +1283,30 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            pretty_assertions::assert_eq!(
-                result,
-                r#"{"output":{"id":1,"attributes":{"description":"before","done":false,"title":"linked_todo"},"links":[{"id":1,"attributes":{"title":"existing_category"}}]}}"#
-            );
-        }
+        pretty_assertions::assert_eq!(
+            result,
+            r#"{"output":{"id":1,"attributes":{"description":"before","done":false,"title":"linked_todo"},"links":[{"id":1,"attributes":{"title":"existing_category"}}]}}"#
+        );
+    }
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn set_new_creates_category_and_links() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
+    #[tokio::test(flavor = "current_thread")]
+    async fn set_new_creates_category_and_links() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-            add_todo_collection(&client).await;
-            add_category_collection(&client).await;
-            todo_is_one_to_many_with_category(&client).await;
+        add_todo_collection(&client).await;
+        add_category_collection(&client).await;
+        todo_is_one_to_many_with_category(&client).await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -1317,13 +1320,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "update_one",
     "body": {
@@ -1336,30 +1339,30 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            pretty_assertions::assert_eq!(
-                result,
-                r#"{"output":{"id":1,"attributes":{"description":"updated","done":true,"title":"todo_to_update"},"links":[{"id":1,"attributes":{"title":"new_category"}}]}}"#
-            );
-        }
+        pretty_assertions::assert_eq!(
+            result,
+            r#"{"output":{"id":1,"attributes":{"description":"updated","done":true,"title":"todo_to_update"},"links":[{"id":1,"attributes":{"title":"new_category"}}]}}"#
+        );
+    }
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn empty_data_with_set_new_links_category() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
+    #[tokio::test(flavor = "current_thread")]
+    async fn empty_data_with_set_new_links_category() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-            add_todo_collection(&client).await;
-            add_category_collection(&client).await;
-            todo_is_one_to_many_with_category(&client).await;
+        add_todo_collection(&client).await;
+        add_category_collection(&client).await;
+        todo_is_one_to_many_with_category(&client).await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -1373,13 +1376,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "update_one",
     "body": {
@@ -1392,30 +1395,30 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            pretty_assertions::assert_eq!(
-                result,
-                r#"{"output":{"id":1,"attributes":{"description":"set_new_only","done":true,"title":"todo_to_update"},"links":[{"id":1,"attributes":{"title":"new_category"}}]}}"#
-            );
-        }
+        pretty_assertions::assert_eq!(
+            result,
+            r#"{"output":{"id":1,"attributes":{"description":"set_new_only","done":true,"title":"todo_to_update"},"links":[{"id":1,"attributes":{"title":"new_category"}}]}}"#
+        );
+    }
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn empty_data_without_set_contributing_links_returns_invalid_data() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
+    #[tokio::test(flavor = "current_thread")]
+    async fn empty_data_without_set_contributing_links_returns_invalid_data() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-            add_todo_collection(&client).await;
-            add_category_collection(&client).await;
-            todo_is_one_to_many_with_category(&client).await;
+        add_todo_collection(&client).await;
+        add_category_collection(&client).await;
+        todo_is_one_to_many_with_category(&client).await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -1429,13 +1432,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "update_one",
     "body": {
@@ -1446,27 +1449,27 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            pretty_assertions::assert_eq!(result, r#"{"error":"InvalidData"}"#);
-        }
+        pretty_assertions::assert_eq!(result, r#"{"error":"InvalidData"}"#);
+    }
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn set_null_clears_category_link() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
+    #[tokio::test(flavor = "current_thread")]
+    async fn set_null_clears_category_link() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-            add_todo_collection(&client).await;
-            add_category_collection(&client).await;
-            todo_is_one_to_many_with_category(&client).await;
+        add_todo_collection(&client).await;
+        add_category_collection(&client).await;
+        todo_is_one_to_many_with_category(&client).await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -1476,13 +1479,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -1498,13 +1501,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "update_one",
     "body": {
@@ -1517,26 +1520,26 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            pretty_assertions::assert_eq!(
-                result,
-                r#"{"output":{"id":1,"attributes":{"description":"before_null","done":false,"title":"todo_linked"},"links":[null]}}"#
-            );
-        }
+        pretty_assertions::assert_eq!(
+            result,
+            r#"{"output":{"id":1,"attributes":{"description":"before_null","done":false,"title":"todo_linked"},"links":[null]}}"#
+        );
+    }
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn link_sql() {
-            watch_sqlx_calls(async |scope, cache| {
+    #[tokio::test(flavor = "current_thread")]
+    async fn link_sql() {
+        watch_sqlx_calls(async |actions| {
                 let pool = Sqlite::in_memory_pool().await;
                 let (client, ex) = Client::new_sqlx_db(pool);
                 let client = client.into_string_client();
 
-                scope.spawn(ex.run());
+                actions.spawn(ex.run());
 
-                setup_todo_with_category_link(&client, &cache).await;
+                setup_todo_with_category_link(&client, &actions).await;
 
                 client
                     .exec(
@@ -1555,7 +1558,7 @@
                     .await;
 
                 assert_sql_eq(
-                    cache.drain(),
+                    actions.take(),
                     vec![
                         "INSERT INTO \"Category\" (\"title\") VALUES ($1) RETURNING \"id\", \"title\";".to_string(),
                     ]
@@ -1582,7 +1585,7 @@
                     .await;
 
                 assert_sql_eq(
-                    cache.drain(),
+                    actions.take(),
                     vec![
                         "INSERT INTO \"Todo\" (\"title\", \"description\", \"done\") VALUES ($1, $2, $3) RETURNING \"id\", \"title\", \"description\", \"done\";".to_string(),
                     ]
@@ -1608,7 +1611,7 @@
                     .await;
 
                 assert_sql_eq(
-                    cache.drain(),
+                    actions.take(),
                     vec![
                         r#"UPDATE "Todo" SET "title" = $1, "fk_category_def" = $2 WHERE "Todo"."id" = $3 RETURNING "id", "title", "description", "done", "fk_category_def";"#
                             .to_string(),
@@ -1619,14 +1622,14 @@
             })
             .await;
 
-            watch_sqlx_calls(async |scope, cache| {
+        watch_sqlx_calls(async |actions| {
                 let pool = Sqlite::in_memory_pool().await;
                 let (client, ex) = Client::new_sqlx_db(pool);
                 let client = client.into_string_client();
 
-                scope.spawn(ex.run());
+                actions.spawn(ex.run());
 
-                setup_todo_with_category_link(&client, &cache).await;
+                setup_todo_with_category_link(&client, &actions).await;
 
                 client
                     .exec(
@@ -1649,7 +1652,7 @@
                     .await;
 
                 assert_sql_eq(
-                    cache.drain(),
+                    actions.take(),
                     vec![
                         "INSERT INTO \"Todo\" (\"title\", \"description\", \"done\") VALUES ($1, $2, $3) RETURNING \"id\", \"title\", \"description\", \"done\";".to_string(),
                     ]
@@ -1675,7 +1678,7 @@
                     .await;
 
                 assert_sql_eq(
-                    cache.drain(),
+                    actions.take(),
                     vec![
                         "INSERT INTO \"Category\" (\"title\") VALUES ($1) RETURNING \"id\", \"title\";".to_string(),
                         "UPDATE \"Todo\" SET \"description\" = $1, \"fk_category_def\" = $2 WHERE \"Todo\".\"id\" = $3 RETURNING \"id\", \"title\", \"description\", \"done\", \"fk_category_def\";".to_string(),
@@ -1684,14 +1687,14 @@
             })
             .await;
 
-            watch_sqlx_calls(async |scope, cache| {
+        watch_sqlx_calls(async |actions| {
                 let pool = Sqlite::in_memory_pool().await;
                 let (client, ex) = Client::new_sqlx_db(pool);
                 let client = client.into_string_client();
 
-                scope.spawn(ex.run());
+                actions.spawn(ex.run());
 
-                setup_todo_with_category_link(&client, &cache).await;
+                setup_todo_with_category_link(&client, &actions).await;
 
                 client
                     .exec(
@@ -1710,7 +1713,7 @@
                     .await;
 
                 assert_sql_eq(
-                    cache.drain(),
+                    actions.take(),
                     vec![
                         "INSERT INTO \"Category\" (\"title\") VALUES ($1) RETURNING \"id\", \"title\";".to_string(),
                     ]
@@ -1739,7 +1742,7 @@
                     .await;
 
                 assert_sql_eq(
-                    cache.drain(),
+                    actions.take(),
                     vec![
                         "INSERT INTO \"Todo\" (\"title\", \"description\", \"done\", \"fk_category_def\") VALUES ($1, $2, $3, $4) RETURNING \"id\", \"title\", \"description\", \"done\", \"fk_category_def\";".to_string(),
                         "SELECT \"Category\".\"id\" AS \"iid\", \"Category\".\"title\" AS \"btitle\" FROM \"Category\" WHERE \"id\" = $1;".to_string(),
@@ -1766,41 +1769,42 @@
                     .await;
 
                 assert_sql_eq(
-                    cache.drain(),
+                    actions.take(),
                     vec![
-                        "UPDATE \"Todo\" SET \"fk_category_def\" =  NULL WHERE \"Todo\".\"id\" = $1 RETURNING \"id\", \"title\", \"description\", \"done\", \"fk_category_def\";".to_string(),
+                        "UPDATE \"Todo\" SET \"fk_category_def\" = NULL WHERE \"Todo\".\"id\" = $1 RETURNING \"id\", \"title\", \"description\", \"done\", \"fk_category_def\";".to_string(),
                     ]
                 );
             })
             .await;
-        }
     }
+}
 
-    mod delete_one {
-        use sqlx::Sqlite;
+mod delete_one {
+    use sqlx::Sqlite;
 
-        use crate::{
-            connect_in_memory::ConnectInMemory, json_client::client_interface::Client,
-            track_sqlx_query::{assert_sql_eq, watch_sqlx_calls},
-        };
+    use crate::{
+        connect_in_memory::ConnectInMemory,
+        json_client::client_interface::Client,
+        track_sqlx_query::{assert_sql_eq, watch_sqlx_calls},
+    };
 
-        use crate::json_client::test_utilities::{
-            add_category_collection, add_todo_collection, setup_todo_with_category_link,
-            todo_is_one_to_many_with_category,
-        };
+    use crate::json_client::test_utilities::{
+        add_category_collection, add_todo_collection, setup_todo_with_category_link,
+        todo_is_one_to_many_with_category,
+    };
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn deletes_todo_without_links() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
+    #[tokio::test(flavor = "current_thread")]
+    async fn deletes_todo_without_links() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-            add_todo_collection(&client).await;
+        add_todo_collection(&client).await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -1814,13 +1818,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "delete_one",
     "body": {
@@ -1830,30 +1834,30 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            pretty_assertions::assert_eq!(
-                result,
-                r#"{"output":{"id":1,"attributes":{"description":"gone","done":false,"title":"todo_to_delete"},"links":[]}}"#
-            );
-        }
+        pretty_assertions::assert_eq!(
+            result,
+            r#"{"output":{"id":1,"attributes":{"description":"gone","done":false,"title":"todo_to_delete"},"links":[]}}"#
+        );
+    }
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn optional_to_many_returns_category_fk() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
+    #[tokio::test(flavor = "current_thread")]
+    async fn one_to_many_returns_category_fk() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-            add_todo_collection(&client).await;
-            add_category_collection(&client).await;
-            todo_is_one_to_many_with_category(&client).await;
+        add_todo_collection(&client).await;
+        add_category_collection(&client).await;
+        todo_is_one_to_many_with_category(&client).await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -1863,13 +1867,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -1885,44 +1889,44 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "delete_one",
     "body": {
         "base": "todo",
         "id": 1,
         "links": [
-            { "ty": "optional_to_many", "to": "category" }
+            { "ty": "one_to_many", "to": "category" }
         ]
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            pretty_assertions::assert_eq!(
-                result,
-                r#"{"output":{"id":1,"attributes":{"description":"with_cat","done":true,"title":"linked_todo"},"links":[{"id":1,"attributes":{"title":"cat_for_delete"}}]}}"#
-            );
-        }
+        pretty_assertions::assert_eq!(
+            result,
+            r#"{"output":{"id":1,"attributes":{"description":"with_cat","done":true,"title":"linked_todo"},"links":[{"id":1,"attributes":{"title":"cat_for_delete"}}]}}"#
+        );
+    }
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn link_sql() {
-            watch_sqlx_calls(async |scope, cache| {
+    #[tokio::test(flavor = "current_thread")]
+    async fn link_sql() {
+        watch_sqlx_calls(async |actions| {
                 let pool = Sqlite::in_memory_pool().await;
                 let (client, ex) = Client::new_sqlx_db(pool);
                 let client = client.into_string_client();
 
-                scope.spawn(ex.run());
+                actions.spawn(ex.run());
 
-                setup_todo_with_category_link(&client, &cache).await;
+                setup_todo_with_category_link(&client, &actions).await;
 
                 client
                     .exec(
@@ -1941,7 +1945,7 @@
                     .await;
 
                 assert_sql_eq(
-                    cache.drain(),
+                    actions.take(),
                     vec![
                         "INSERT INTO \"Category\" (\"title\") VALUES ($1) RETURNING \"id\", \"title\";".to_string(),
                     ]
@@ -1970,7 +1974,7 @@
                     .await;
 
                 assert_sql_eq(
-                    cache.drain(),
+                    actions.take(),
                     vec![
                         "INSERT INTO \"Todo\" (\"title\", \"description\", \"done\", \"fk_category_def\") VALUES ($1, $2, $3, $4) RETURNING \"id\", \"title\", \"description\", \"done\", \"fk_category_def\";".to_string(),
                         "SELECT \"Category\".\"id\" AS \"iid\", \"Category\".\"title\" AS \"btitle\" FROM \"Category\" WHERE \"id\" = $1;".to_string(),
@@ -1986,7 +1990,7 @@
         "base": "todo",
         "id": 1,
         "links": [
-            { "ty": "optional_to_many", "to": "category" }
+            { "ty": "one_to_many", "to": "category" }
         ]
     }
 }
@@ -1996,7 +2000,7 @@
                     .await;
 
                 assert_sql_eq(
-                    cache.drain(),
+                    actions.take(),
                     vec![
                         r#"SELECT "Todo"."id" AS "iid", "Todo"."title" AS "btitle", "Todo"."description" AS "bdescription", "Todo"."done" AS "bdone", "Category"."id" AS "lid", "Category"."title" AS "ltitle" FROM "Todo" LEFT JOIN "Category" ON "Todo"."fk_category_def" = "Category"."id" WHERE "Todo"."id" = $1;"#
                             .to_string(),
@@ -2006,36 +2010,36 @@
                 );
             })
             .await;
-        }
+    }
+}
+
+mod many_to_many {
+    use sqlx::Sqlite;
+
+    use crate::{connect_in_memory::ConnectInMemory, json_client::client_interface::Client};
+
+    use crate::json_client::test_utilities::{
+        add_tag_collection, add_todo_collection, todo_is_many_to_many_with_tag,
+    };
+
+    async fn setup_todo_tag_link(client: &crate::json_client::string_client::StringClient) {
+        add_todo_collection(client).await;
+        add_tag_collection(client).await;
+        todo_is_many_to_many_with_tag(client).await;
     }
 
-    mod many_to_many {
-        use sqlx::Sqlite;
+    #[tokio::test(flavor = "current_thread")]
+    async fn insert_set_id_links_existing_tag() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-        use crate::{connect_in_memory::ConnectInMemory, json_client::client_interface::Client};
+        setup_todo_tag_link(&client).await;
 
-        use crate::json_client::test_utilities::{
-            add_tag_collection, add_todo_collection, todo_is_many_to_many_with_tag,
-        };
-
-        async fn setup_todo_tag_link(client: &crate::json_client::string_client::StringClient) {
-            add_todo_collection(client).await;
-            add_tag_collection(client).await;
-            todo_is_many_to_many_with_tag(client).await;
-        }
-
-        #[tokio::test(flavor = "current_thread")]
-        async fn insert_set_id_links_existing_tag() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
-
-            setup_todo_tag_link(&client).await;
-
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2045,13 +2049,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2067,28 +2071,28 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            pretty_assertions::assert_eq!(
-                result,
-                r#"{"output":{"id":1,"attributes":{"description":"linked","done":true,"title":"todo_with_tag"},"links":[{"id":1,"attributes":{"title":"urgent"}}]}}"#
-            );
-        }
+        pretty_assertions::assert_eq!(
+            result,
+            r#"{"output":{"id":1,"attributes":{"description":"linked","done":true,"title":"todo_with_tag"},"links":[{"id":1,"attributes":{"title":"urgent"}}]}}"#
+        );
+    }
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn fetch_one_returns_linked_tags() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
+    #[tokio::test(flavor = "current_thread")]
+    async fn fetch_one_returns_linked_tags() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-            setup_todo_tag_link(&client).await;
+        setup_todo_tag_link(&client).await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2098,13 +2102,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2114,13 +2118,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2137,13 +2141,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "fetch_one",
     "body": {
@@ -2156,28 +2160,28 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            pretty_assertions::assert_eq!(
-                result,
-                r#"{"output":{"id":1,"attributes":{"description":"a","done":true,"title":"todo_a"},"links":[{"many_output":[{"id":1,"attributes":{"title":"urgent"}},{"id":2,"attributes":{"title":"home"}}]}]}}"#
-            );
-        }
+        pretty_assertions::assert_eq!(
+            result,
+            r#"{"output":{"id":1,"attributes":{"description":"a","done":true,"title":"todo_a"},"links":[{"many_output":[{"id":1,"attributes":{"title":"urgent"}},{"id":2,"attributes":{"title":"home"}}]}]}}"#
+        );
+    }
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn fetch_many_returns_linked_tags() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
+    #[tokio::test(flavor = "current_thread")]
+    async fn fetch_many_returns_linked_tags() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-            setup_todo_tag_link(&client).await;
+        setup_todo_tag_link(&client).await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2187,13 +2191,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2209,13 +2213,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "fetch_many",
     "body": {
@@ -2228,28 +2232,28 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            pretty_assertions::assert_eq!(
-                result,
-                r#"{"output":{"items":[{"id":1,"attributes":{"description":"a","done":true,"title":"todo_a"},"links":[{"many_output":[{"id":1,"attributes":{"title":"urgent"}}]}]}],"next_item":null}}"#
-            );
-        }
+        pretty_assertions::assert_eq!(
+            result,
+            r#"{"output":{"items":[{"id":1,"attributes":{"description":"a","done":true,"title":"todo_a"},"links":[{"many_output":[{"id":1,"attributes":{"title":"urgent"}}]}]}],"next_item":null}}"#
+        );
+    }
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn update_set_id_adds_tag_link() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
+    #[tokio::test(flavor = "current_thread")]
+    async fn update_set_id_adds_tag_link() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-            setup_todo_tag_link(&client).await;
+        setup_todo_tag_link(&client).await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2259,13 +2263,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2279,13 +2283,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "update_one",
     "body": {
@@ -2298,28 +2302,28 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            pretty_assertions::assert_eq!(
-                result,
-                r#"{"output":{"id":1,"attributes":{"description":"before","done":false,"title":"linked_todo"},"links":[{"id":1,"attributes":{"title":"urgent"}}]}}"#
-            );
-        }
+        pretty_assertions::assert_eq!(
+            result,
+            r#"{"output":{"id":1,"attributes":{"description":"before","done":false,"title":"linked_todo"},"links":[{"id":1,"attributes":{"title":"urgent"}}]}}"#
+        );
+    }
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn update_remove_id_removes_tag_link() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
+    #[tokio::test(flavor = "current_thread")]
+    async fn update_remove_id_removes_tag_link() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-            setup_todo_tag_link(&client).await;
+        setup_todo_tag_link(&client).await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2329,13 +2333,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2345,13 +2349,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2368,13 +2372,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "update_one",
     "body": {
@@ -2387,28 +2391,28 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            pretty_assertions::assert_eq!(
-                result,
-                r#"{"output":{"id":1,"attributes":{"description":"with_tags","done":false,"title":"todo_linked"},"links":[{"id":1,"attributes":{"title":"urgent"}}]}}"#
-            );
-        }
+        pretty_assertions::assert_eq!(
+            result,
+            r#"{"output":{"id":1,"attributes":{"description":"with_tags","done":false,"title":"todo_linked"},"links":[{"id":1,"attributes":{"title":"urgent"}}]}}"#
+        );
+    }
 
-        #[tokio::test(flavor = "current_thread")]
-        async fn delete_returns_linked_tag_ids() {
-            let pool = Sqlite::in_memory_pool().await;
-            let (client, ex) = Client::new_sqlx_db(pool);
-            let client = client.into_string_client();
-            let _executor = tokio::spawn(ex.run());
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_returns_linked_tag_ids() {
+        let pool = Sqlite::in_memory_pool().await;
+        let (client, ex) = Client::new_sqlx_db(pool);
+        let client = client.into_string_client();
+        let _executor = tokio::spawn(ex.run());
 
-            setup_todo_tag_link(&client).await;
+        setup_todo_tag_link(&client).await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2418,13 +2422,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2434,13 +2438,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            client
-                .exec(
-                    r#"
+        client
+            .exec(
+                r#"
 {
     "op": "insert_one",
     "body": {
@@ -2457,13 +2461,13 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
-            let result = client
-                .exec(
-                    r#"
+        let result = client
+            .exec(
+                r#"
 {
     "op": "delete_one",
     "body": {
@@ -2475,84 +2479,79 @@
     }
 }
 "#
-                    .to_string(),
-                )
-                .await;
+                .to_string(),
+            )
+            .await;
 
+        pretty_assertions::assert_eq!(
+            result,
+            r#"{"output":{"id":1,"attributes":{"description":"with_tags","done":true,"title":"linked_todo"},"links":[{"many_output":[{"id":1,"attributes":{"title":"urgent"}},{"id":2,"attributes":{"title":"home"}}]}]}}"#
+        );
+    }
+}
+mod comprehensive {
+    use sqlx::Sqlite;
+
+    mod assert_helpers {
+        use crate::gen_serde::pretty_json;
+
+        pub fn pretty_exec_output(value: impl AsRef<str>) -> String {
+            pretty_json(value.as_ref())
+        }
+
+        pub fn pretty_sql(value: impl AsRef<str>) -> String {
+            value
+                .as_ref()
+                .split(';')
+                .filter_map(|statement| {
+                    let statement = statement.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if statement.is_empty() || statement.starts_with("PRAGMA ") {
+                        None
+                    } else {
+                        Some(format!("{statement};"))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        pub fn assert_exec_eq(actual: impl AsRef<str>, expected: impl AsRef<str>) {
+            pretty_assertions::assert_eq!(pretty_exec_output(actual), pretty_exec_output(expected),);
+        }
+
+        pub fn assert_sql_drain(drain: Vec<String>, expected: impl AsRef<str>) {
             pretty_assertions::assert_eq!(
-                result,
-                r#"{"output":{"id":1,"attributes":{"description":"with_tags","done":true,"title":"linked_todo"},"links":[{"many_output":[{"id":1,"attributes":{"title":"urgent"}},{"id":2,"attributes":{"title":"home"}}]}]}}"#
+                pretty_sql(crate::track_sqlx_query::without_pragma(drain).join("\n"),),
+                pretty_sql(expected),
             );
         }
     }
-    mod comprehensive {
-        use sqlx::Sqlite;
 
-        mod assert_helpers {
-            use crate::gen_serde::pretty_json;
+    use assert_helpers::{assert_exec_eq, assert_sql_drain};
 
-            pub fn pretty_exec_output(value: impl AsRef<str>) -> String {
-                pretty_json(value.as_ref())
-            }
+    use crate::{
+        connect_in_memory::ConnectInMemory,
+        json_client::client_interface::Client,
+        track_sqlx_query::{assert_sql_eq, watch_sqlx_calls},
+    };
 
-            pub fn pretty_sql(value: impl AsRef<str>) -> String {
-                value
-                    .as_ref()
-                    .split(';')
-                    .filter_map(|statement| {
-                        let statement = statement.split_whitespace().collect::<Vec<_>>().join(" ");
-                        if statement.is_empty() || statement.starts_with("PRAGMA ") {
-                            None
-                        } else {
-                            Some(format!("{statement};"))
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
+    use super::super::test_utilities::{
+        add_category_collection, add_tag_collection, add_todo_collection, clear_timestams,
+        todo_is_many_to_many_with_tag, todo_is_one_to_many_with_category, todo_is_timestamped,
+    };
 
-            pub fn assert_exec_eq(actual: impl AsRef<str>, expected: impl AsRef<str>) {
-                pretty_assertions::assert_eq!(
-                    pretty_exec_output(actual),
-                    pretty_exec_output(expected),
-                );
-            }
-
-            pub fn assert_sql_drain(drain: Vec<String>, expected: impl AsRef<str>) {
-                pretty_assertions::assert_eq!(
-                    pretty_sql(
-                        crate::track_sqlx_query::without_pragma(drain)
-                            .join("\n"),
-                    ),
-                    pretty_sql(expected),
-                );
-            }
-        }
-
-        use assert_helpers::{assert_exec_eq, assert_sql_drain};
-
-        use crate::{
-            connect_in_memory::ConnectInMemory, json_client::client_interface::Client,
-            track_sqlx_query::{assert_sql_eq, watch_sqlx_calls},
-        };
-
-        use super::super::test_utilities::{
-            add_category_collection, add_tag_collection, add_todo_collection, clear_timestams,
-            todo_is_many_to_many_with_tag, todo_is_one_to_many_with_category, todo_is_timestamped,
-        };
-
-        /// End-to-end walkthrough with readable JSON/SQL diffs via pretty helpers.
-        #[tokio::test(flavor = "current_thread")]
-        async fn all_crud_operations_with_sql() {
-            watch_sqlx_calls(async |scope, cache| {
+    /// End-to-end walkthrough with readable JSON/SQL diffs via pretty helpers.
+    #[tokio::test(flavor = "current_thread")]
+    async fn all_crud_operations_with_sql() {
+        watch_sqlx_calls(async |actions| {
                 let pool = Sqlite::in_memory_pool().await;
                 let (client, ex) = Client::new_sqlx_db(pool.clone());
                 let client = client.into_string_client();
-                scope.spawn(ex.run());
+                actions.spawn(ex.run());
 
                 add_todo_collection(&client).await;
                 assert_sql_drain(
-                    cache.drain(),
+                    actions.take(),
                     r#"
 PRAGMA foreign_keys = ON;
 CREATE TABLE "Todo" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL, "description" TEXT, "done" BOOLEAN NOT NULL);
@@ -2561,36 +2560,36 @@ CREATE TABLE "Todo" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NU
 
                 add_category_collection(&client).await;
                 assert_sql_drain(
-                    cache.drain(),
+                    actions.take(),
                     r#"CREATE TABLE "Category" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL);"#,
                 );
 
                 add_tag_collection(&client).await;
                 assert_sql_drain(
-                    cache.drain(),
+                    actions.take(),
                     r#"CREATE TABLE "Tag" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL);"#,
                 );
 
                 todo_is_timestamped(&client).await;
-                cache.drain();
+                actions.take();
 
                 todo_is_one_to_many_with_category(&client).await;
                 assert_sql_drain(
-                    cache
-                        .drain()
+                    actions
+                        .take()
                         .into_iter()
                         .filter(|sql| sql.contains("fk_category_def"))
                         .collect(),
-                    r#"ALTER TABLE "Todo" ADD COLUMN "fk_category_def" INTEGER  REFERENCES "Category"("id") ON DELETE SET NULL;"#,
+                    r#"ALTER TABLE "Todo" ADD COLUMN "fk_category_def" INTEGER REFERENCES "Category"("id") ON DELETE SET NULL;"#,
                 );
 
                 todo_is_many_to_many_with_tag(&client).await;
                 assert_sql_drain(
-                    cache.drain(),
-                    r#"CREATE TABLE "ct_todotag_def" ("todo_id" INTEGER NOT NULL  REFERENCES "Todo"("id") ON DELETE CASCADE, "tag_id" INTEGER NOT NULL  REFERENCES "Tag"("id") ON DELETE CASCADE, PRIMARY KEY ("todo_id", "tag_id"));"#,
+                    actions.take(),
+                    r#"CREATE TABLE "ct_todo_tag_def" ("todo_id" INTEGER NOT NULL  REFERENCES "Todo"("id") ON DELETE CASCADE, "tag_id" INTEGER NOT NULL  REFERENCES "Tag"("id") ON DELETE CASCADE, PRIMARY KEY ("todo_id", "tag_id"));"#,
                 );
 
-                cache.clear();
+                actions.clear();
 
                 assert_exec_eq(
                     client
@@ -2619,7 +2618,7 @@ CREATE TABLE "Todo" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NU
 "#,
                 );
                 assert_sql_drain(
-                    cache.drain(),
+                    actions.take(),
                     r#"INSERT INTO "Category" ("title") VALUES ($1) RETURNING "id", "title";"#,
                 );
 
@@ -2662,7 +2661,7 @@ CREATE TABLE "Todo" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NU
 "#,
                 );
                 assert_sql_drain(
-                    cache.drain(),
+                    actions.take(),
                     r#"
 INSERT INTO "Todo" ("title", "description", "done", "fk_category_def") VALUES ($1, $2, $3, $4) RETURNING "id", "title", "description", "done", "fk_category_def";
 SELECT "Category"."id" AS "iid", "Category"."title" AS "btitle" FROM "Category" WHERE "id" = $1;
@@ -2684,7 +2683,7 @@ SELECT "Category"."id" AS "iid", "Category"."title" AS "btitle" FROM "Category" 
             { "ty": "col_eq", "col": "done", "eq": true }
         ],
         "links": [
-            { "ty": "optional_to_many", "to": "category" }
+            { "ty": "one_to_many", "to": "category" }
             { "ty": "many_to_many", "to": "tag" }
             { "ty": "timestamp" }
         ]
@@ -2716,14 +2715,14 @@ SELECT "Category"."id" AS "iid", "Category"."title" AS "btitle" FROM "Category" 
 "#,
                 );
                 assert_sql_drain(
-                    cache.drain(),
+                    actions.take(),
                     r#"
 UPDATE "Todo" SET "created_at" = "demo created_at", "updated_at" = "demo updated_at";
-SELECT "Todo"."id" AS "iid", "Todo"."title" AS "btitle", "Todo"."description" AS "bdescription", "Todo"."done" AS "bdone", "Category"."id" AS "l0id", "Category"."title" AS "l0title", "Todo"."id" AS "l1id", "Todo"."created_at" AS "l2created_at", "Todo"."updated_at" AS "l2updated_at" FROM "Todo" LEFT JOIN "Category" ON "Todo"."fk_category_def" = "Category"."id" WHERE "Todo"."id" = $1 AND "done" = $2;
-SELECT "ct_todotag_def"."todo_id" AS "from_id", "Tag"."id", "Tag"."title" FROM "ct_todotag_def" INNER JOIN "Tag" ON "ct_todotag_def"."tag_id" = "Tag"."id" WHERE "ct_todotag_def"."todo_id" IN ($1);
+SELECT "Todo"."id" AS "iid", "Todo"."title" AS "btitle", "Todo"."description" AS "bdescription", "Todo"."done" AS "bdone", "Category"."id" AS "l0id", "Category"."title" AS "l0title", "Todo"."id" AS "l1id", "Todo"."created_at" AS "l2created_at", "Todo"."updated_at" AS "l2updated_at" FROM "Todo" LEFT JOIN "Category" ON "Todo"."fk_category_def" = "Category"."id" WHERE "Todo"."id" = $1 AND "Todo"."done" = $2;
+SELECT "ct_todo_tag_def"."todo_id" AS "from_id", "ct_todo_tag_def"."tag_id" AS "to_id", "Tag"."title" AS "t_title" FROM "ct_todo_tag_def" INNER JOIN "Tag" ON "ct_todo_tag_def"."tag_id" = "Tag"."id" WHERE "todo_id" IN ($1);
 "#,
                 );
             })
             .await;
-        }
     }
+}

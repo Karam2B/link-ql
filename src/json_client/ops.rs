@@ -59,7 +59,7 @@ macro_rules! ops {
                     std::string::String:
                         ::sqlx::Type<S> + for<'q> ::sqlx::Encode<'q, S> + for<'d> ::sqlx::Decode<'d, S>,
                     $crate::json_client::dynamic_collection::DynamicCollection<S>:
-                        $crate::on_migrate::OnMigrate<Statements: $crate::sqlx_query_builder::Expression<'static, S>>,
+                        $crate::operations::operations_expressions_crossover::MigrateExpression<Migrate: $crate::sqlx_query_builder::Expression<'static, S>>,
                     for<'a> S::Arguments<'a>: ::sqlx::IntoArguments<'a, S>,
                     for<'a> &'a str: ::sqlx::ColumnIndex<<S as ::sqlx::Database>::Row>,
                     i64: for<'r> ::sqlx::Decode<'r, S>
@@ -84,17 +84,18 @@ macro_rules! ops {
                         for<'r> ::sqlx::Decode<'r, S>
                         + for<'q> ::sqlx::Encode<'q, S>
                         + ::sqlx::Type<S>,
-                    $crate::links::relation_optional_to_many::OptionalToMany<
+                    $crate::links::relation_one_to_many::OneToMany<
                         $crate::links::DefaultRelationKey,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
                     >: $crate::json_client::op_fetch_many_trait_extension::JsonLinkFetchMany<S>,
-                    $crate::links::relation_optional_to_many_inverse::OptionalToManyInverse<
+                    $crate::links::relation_one_to_many_inverse::OneToManyInverse<
                         $crate::links::DefaultRelationKey,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
                     >: $crate::json_client::op_fetch_many_trait_extension::JsonLinkFetchMany<S>,
                     $crate::links::relation_many_to_many::ManyToMany<
+                        false,
                         $crate::links::DefaultRelationKey,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
@@ -102,17 +103,18 @@ macro_rules! ops {
                     $crate::links::timestamp::Timestamp<
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
                     >: $crate::json_client::op_fetch_many_trait_extension::JsonLinkFetchMany<S>,
-                    $crate::links::relation_optional_to_many::OptionalToMany<
+                    $crate::links::relation_one_to_many::OneToMany<
                         $crate::links::DefaultRelationKey,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
                     >: $crate::json_client::op_fetch_one_trait_extension::JsonLinkFetchOne<S>,
-                    $crate::links::relation_optional_to_many_inverse::OptionalToManyInverse<
+                    $crate::links::relation_one_to_many_inverse::OneToManyInverse<
                         $crate::links::DefaultRelationKey,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
                     >: $crate::json_client::op_fetch_one_trait_extension::JsonLinkFetchOne<S>,
                     $crate::links::relation_many_to_many::ManyToMany<
+                        false,
                         $crate::links::DefaultRelationKey,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
@@ -120,24 +122,25 @@ macro_rules! ops {
                     $crate::links::timestamp::Timestamp<
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
                     >: $crate::json_client::op_fetch_one_trait_extension::JsonLinkFetchOne<S>,
-                    $crate::links::relation_optional_to_many::OptionalToMany<
+                    $crate::links::relation_one_to_many::OneToMany<
                         $crate::links::DefaultRelationKey,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
-                    >: $crate::on_migrate::OnMigrate<
-                        Statements: for<'q> $crate::sqlx_query_builder::Expression<'q, S>,
+                    >: $crate::operations::operations_expressions_crossover::MigrateExpression<
+                        Migrate: for<'q> $crate::sqlx_query_builder::Expression<'q, S>,
                     >,
                     $crate::links::relation_many_to_many::ManyToMany<
+                        false,
                         $crate::links::DefaultRelationKey,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
-                    >: $crate::on_migrate::OnMigrate<
-                        Statements: for<'q> $crate::sqlx_query_builder::Expression<'q, S>,
+                    >: $crate::operations::operations_expressions_crossover::MigrateExpression<
+                        Migrate: for<'q> $crate::sqlx_query_builder::Expression<'q, S>,
                     >,
                     $crate::links::timestamp::Timestamp<
                         std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>,
-                    >: $crate::on_migrate::OnMigrate<
-                        Statements: for<'q> $crate::sqlx_query_builder::Expression<'q, S>,
+                    >: $crate::operations::operations_expressions_crossover::MigrateExpression<
+                        Migrate: for<'q> $crate::sqlx_query_builder::Expression<'q, S>,
                     >,
                     std::sync::Arc<$crate::json_client::dynamic_collection::DynamicCollection<S>>:
                         for<'r> $crate::from_row::FromRowAlias<

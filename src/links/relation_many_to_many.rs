@@ -1,126 +1,111 @@
-use crate::links::{LinkedToBase, LinkedViaIds};
+use crate::{
+    collections::Collection,
+    from_row::FromRowData,
+    links::{LinkedToBase, LinkedViaIds},
+};
 
 #[derive(Clone, Hash, PartialEq, Eq)]
-pub struct ManyToMany<Key, From, To> {
+pub struct ManyToMany<const INVERSE: bool, Key, From, To> {
     pub relation_key: Key,
     pub from: From,
     pub to: To,
 }
 
-impl<Key, From, To> LinkedViaIds for ManyToMany<Key, From, To> {}
+impl<const INVERSE: bool, VKey, From, To> LinkedViaIds for ManyToMany<INVERSE, VKey, From, To> {}
 
-impl<Key, From, To> LinkedToBase for ManyToMany<Key, From, To> {
+impl<const INVERSE: bool, VKey, From, To> LinkedToBase for ManyToMany<INVERSE, VKey, From, To> {
     type Base = From;
 }
 
-pub mod junction_names {
-    use core::fmt;
-
-    use crate::{
-        database_extention::DatabaseExt,
-        expressions::standard_naming_conventions::ConjuctionTableName,
-        extentions::common_expressions::TableNameExpression,
-        links::relation_many_to_many::ManyToMany,
-        sqlx_query_builder::{Expression, OpExpression, StatementBuilder},
-    };
-
-    #[derive(Clone)]
-    pub struct JunctionSideColumn<TableLower> {
-        pub table_lower: TableLower,
-    }
-
-    impl<TableLower> fmt::Display for JunctionSideColumn<TableLower>
-    where
-        TableLower: AsRef<str>,
-    {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "{}_id", self.table_lower.as_ref())
-        }
-    }
-
-    impl<TableLower> OpExpression for JunctionSideColumn<TableLower> {}
-
-    impl<'q, S, TableLower> Expression<'q, S> for JunctionSideColumn<TableLower>
-    where
-        S: DatabaseExt,
-        TableLower: AsRef<str> + 'q,
-    {
-        fn expression(self, ctx: &mut StatementBuilder<'q, S>) {
-            ctx.sanitize_many((self.table_lower.as_ref(), "_id"));
-        }
-    }
-
-    impl<Key, From, To> ManyToMany<Key, From, To>
-    where
-        Key: Clone,
-        From: Clone + TableNameExpression,
-        To: Clone + TableNameExpression,
-    {
-        pub fn junction_table_name(
-            &self,
-        ) -> ConjuctionTableName<
-            From::LowerCaseTableNameExpression,
-            To::LowerCaseTableNameExpression,
-            Key,
-        >
-        where
-            Key: Clone,
-        {
-            ConjuctionTableName {
-                first: self.from.lower_case_table_name_expression(),
-                second: self.to.lower_case_table_name_expression(),
-                key: self.relation_key.clone(),
-            }
-        }
-
-        pub fn from_junction_column(
-            &self,
-        ) -> JunctionSideColumn<From::LowerCaseTableNameExpression> {
-            JunctionSideColumn {
-                table_lower: self.from.lower_case_table_name_expression(),
-            }
-        }
-
-        pub fn to_junction_column(&self) -> JunctionSideColumn<To::LowerCaseTableNameExpression> {
-            JunctionSideColumn {
-                table_lower: self.to.lower_case_table_name_expression(),
-            }
-        }
-    }
+pub struct InsertJunctionManyRows<const INVERSE: bool, Key, From, To, I>
+where
+    From: Collection,
+    From::Id: FromRowData,
+{
+    pub relation: ManyToMany<INVERSE, Key, From, To>,
+    pub from_id: <From::Id as FromRowData>::RData,
+    pub to_ids: I,
 }
 
-mod migration_expressions {
+mod impl_insert_junction_many_rows {
+    use std::future::Future;
+
+    use sqlx::{Encode, Type};
+
     use crate::{
+        collections::{Collection, CollectionId, SingleColumnId},
         database_extention::DatabaseExt,
-        sqlx_query_builder::{Expression, ManyExpressions, OpExpression, StatementBuilder},
+        execute::Executable,
+        fix_executor::ExecutorTrait,
+        from_row::FromRowData,
+        links::{
+            fetch_linked_records::ManyToManyJunctionNames,
+            relation_many_to_many::{InsertJunctionManyRows},
+        },
+        operations::Operation,
+        sqlx_query_builder::{
+            Join, StatementBuilder,
+            basic_expressions::Bind,
+            statements::insert_statement::{InsertStatement, IteratorSpec},
+        },
     };
 
-    pub struct OnDeleteCascade;
-
-    impl OpExpression for OnDeleteCascade {}
-
-    impl<'q, S> Expression<'q, S> for OnDeleteCascade
+    impl<const INVERSE: bool, Key, From, To, I> crate::operations::OperationOutput
+        for InsertJunctionManyRows<INVERSE, Key, From, To, I>
     where
-        S: DatabaseExt,
+        From: Collection,
+        From::Id: FromRowData,
+        To: Collection,
     {
-        fn expression(self, ctx: &mut StatementBuilder<'q, S>) {
-            ctx.syntax("ON DELETE CASCADE");
-        }
+        type Output = ();
     }
 
-    pub struct CompositePrimaryKey<Cols>(pub Cols);
-
-    impl<Cols> OpExpression for CompositePrimaryKey<Cols> {}
-
-    impl<'q, S, Cols> Expression<'q, S> for CompositePrimaryKey<Cols>
+    impl<const INVERSE: bool, S, Key, From, To, I> Operation<S>
+        for InsertJunctionManyRows<INVERSE, Key, From, To, I>
     where
-        S: DatabaseExt,
-        Cols: ManyExpressions<'q, S> + 'q,
+        S: DatabaseExt + ExecutorTrait,
+        Key: Clone + AsRef<str> + Send,
+        From: Collection<Id: SingleColumnId + FromRowData> + Clone + Send,
+        <From::Id as FromRowData>::RData: Send + for<'q> Encode<'q, S> + Type<S> + Copy,
+        To: Collection<Id: SingleColumnId> + Clone + Send,
+        <To::Id as CollectionId>::IdData: Send + for<'q> Encode<'q, S> + Type<S> + Copy,
+        I: Send + IntoIterator<Item = <To::Id as CollectionId>::IdData>,
     {
-        fn expression(self, ctx: &mut StatementBuilder<'q, S>) {
-            ctx.syntax("PRIMARY KEY (");
-            self.0.expression("", ", ", ctx);
-            ctx.syntax(")");
+        fn exec_operation(self, pool: &mut S::Connection) -> impl Future<Output = ()> + Send {
+            async move {
+                let junction = self.relation.junction_table_as_str();
+                let from_col = self.relation.from_junction_col_as_str();
+                let to_col = self.relation.to_junction_col_as_str();
+                let from_id = self.from_id;
+
+                let (stmt, args) = StatementBuilder::<'_, S>::new(InsertStatement {
+                    table_name: junction,
+                    identifiers: Join {
+                        start: "",
+                        separator: ", ",
+                        items: (from_col.as_str(), to_col.as_str()),
+                    },
+                    values: IteratorSpec(self.to_ids.into_iter().map(|to_id| {
+                        Join {
+                            start: "",
+                            separator: ", ",
+                            items: (Bind(from_id), Bind(to_id)),
+                        }
+                    })),
+                    returning: (),
+                })
+                .unwrap();
+
+                S::fetch_all(
+                    &mut *pool,
+                    Executable {
+                        string: &stmt,
+                        arguments: args,
+                    },
+                )
+                .await
+                .unwrap();
+            }
         }
     }
 }
@@ -130,285 +115,165 @@ mod impl_on_migrate {
 
     use crate::{
         collections::{Collection, SingleColumnId},
-        extentions::common_expressions::TableNameExpression,
-        links::relation_many_to_many::{
-            ManyToMany,
-            junction_names::JunctionSideColumn,
-            migration_expressions::{CompositePrimaryKey, OnDeleteCascade},
+        links::{
+            relation_many_to_many::ManyToMany,
+            utils::{ConventionalJunctionTableName, conventional_junction_table_name},
         },
-        on_migrate::OnMigrate,
-        sqlx_query_builder::basic_expressions::{ColumnDefinition, ManyFlat, foriegn_key},
-        sqlx_query_builder::statements::create_table_statement::{
-            CreateTable, expressions::create_table,
-        },
-    };
-
-    impl<Key, From, To> OnMigrate for ManyToMany<Key, From, To>
-    where
-        Key: AsRef<str> + Clone,
-        From: Collection<Id: SingleColumnId> + Clone + TableNameExpression,
-        To: Collection<Id: SingleColumnId> + Clone + TableNameExpression,
-    {
-        type Statements = CreateTable<
-            create_table,
-            ConjuctionTableName<
-                From::LowerCaseTableNameExpression,
-                To::LowerCaseTableNameExpression,
-                Key,
-            >,
-            ManyPossible<(
-                ColumnDefinition<
-                    JunctionSideColumn<From::LowerCaseTableNameExpression>,
-                    i64,
-                    foriegn_key<ManyPossible<(OnDeleteCascade,)>>,
-                >,
-                ColumnDefinition<
-                    JunctionSideColumn<To::LowerCaseTableNameExpression>,
-                    i64,
-                    foriegn_key<ManyPossible<(OnDeleteCascade,)>>,
-                >,
-                CompositePrimaryKey<
-                    ManyFlat<(
-                        JunctionSideColumn<From::LowerCaseTableNameExpression>,
-                        JunctionSideColumn<To::LowerCaseTableNameExpression>,
-                    )>,
-                >,
-            )>,
-        >;
-
-        fn statments(&self) -> Self::Statements {
-            CreateTable {
-                init: create_table,
-                name: self.junction_table_name(),
-                col_defs: ManyPossible((
-                    ColumnDefinition {
-                        name: self.from_junction_column(),
-                        ty: PhantomData::<i64>,
-                        constraints: foriegn_key {
-                            references_table: self.from.table_name().to_string(),
-                            references_col: self.from.id().as_ref().to_string(),
-                            ons: ManyPossible((OnDeleteCascade,)),
-                        },
-                    },
-                    ColumnDefinition {
-                        name: self.to_junction_column(),
-                        ty: PhantomData::<i64>,
-                        constraints: foriegn_key {
-                            references_table: self.to.table_name().to_string(),
-                            references_col: self.to.id().as_ref().to_string(),
-                            ons: ManyPossible((OnDeleteCascade,)),
-                        },
-                    },
-                    CompositePrimaryKey(ManyFlat((
-                        self.from_junction_column(),
-                        self.to_junction_column(),
-                    ))),
-                )),
-            }
-        }
-    }
-}
-
-mod many_to_many_items {
-    use crate::{
-        collections::{Collection, CollectionId},
-        database_extention::DatabaseExt,
-        extentions::common_expressions::Aliased,
-        from_row::{
-            FromRowAlias, FromRowData, TryFromRowAlias,
-            swich_to_base_id::{pre_alias_to_base_id, two_alias_to_base_id},
+        operations::operations_expressions_crossover::{
+            ExpressionsForOperation, MigrateExpression, TableExpressions,
         },
         sqlx_query_builder::{
-            IsOpExpression, ManyExpressions, StatementBuilder, functional_expr::ManyFlat,
+            Join,
+            basic_expressions::{CompositePrimaryKey, ForeignKey, OnDeleteCascase, TypeAsSyntax},
+            sanitize_combinator::Sanitize,
+            statements::create_table_statement::{
+                ColumnDefinition, CreateTable, NotNull, expressions::CreateTableInit,
+            },
         },
     };
 
-    #[derive(Clone, Debug)]
-    #[allow(dead_code)]
-    pub struct ManyToManyItems<FromId, ToId, ToAttributes> {
-        pub from_id: FromId,
-        pub to_id: ToId,
-        pub to_attributes: ToAttributes,
-    }
-
-    impl<F, Ti, Ta> Aliased for ManyToManyItems<F, Ti, Ta>
+    impl<VKey, From, To> MigrateExpression for ManyToMany<false, VKey, From, To>
     where
-        F: Aliased,
-        Ti: Aliased,
-        Ta: Aliased,
+        To: 'static + TableExpressions,
+        To::Id: ExpressionsForOperation,
+        From: 'static + TableExpressions,
+        From::Id: ExpressionsForOperation,
+        VKey: AsRef<str> + Clone,
+        From: Collection<Id: SingleColumnId> + Clone + TableExpressions,
+        To: Collection<Id: SingleColumnId> + Clone + TableExpressions,
     {
-        type Aliased = ManyToManyItems<F::Aliased, Ti::Aliased, Ta::Aliased>;
-        fn aliased(&self, alias: &'static str) -> Self::Aliased {
-            ManyToManyItems {
-                from_id: self.from_id.aliased(alias),
-                to_id: self.to_id.aliased(alias),
-                to_attributes: self.to_attributes.aliased(alias),
+        type Migrate = CreateTable<
+            CreateTableInit,
+            Sanitize<ConventionalJunctionTableName<VKey, From, To>>,
+            (
+                ColumnDefinition<(
+                    Sanitize<(From::SnakeCase, &'static str)>,
+                    TypeAsSyntax<i64>,
+                    NotNull,
+                    ForeignKey<
+                        From::PascalCase,
+                        <From::Id as ExpressionsForOperation>::Identifier,
+                        (OnDeleteCascase,),
+                    >,
+                )>,
+                ColumnDefinition<(
+                    Sanitize<(To::SnakeCase, &'static str)>,
+                    TypeAsSyntax<i64>,
+                    NotNull,
+                    ForeignKey<
+                        To::PascalCase,
+                        <To::Id as ExpressionsForOperation>::Identifier,
+                        (OnDeleteCascase,),
+                    >,
+                )>,
+                CompositePrimaryKey<
+                    Join<(
+                        Sanitize<(From::SnakeCase, &'static str)>,
+                        Sanitize<(To::SnakeCase, &'static str)>,
+                    )>,
+                >,
+            ),
+        >;
+
+        fn migrate(&self) -> Self::Migrate {
+            CreateTable {
+                init: CreateTableInit,
+                name: Sanitize(conventional_junction_table_name(
+                    self.relation_key.clone(),
+                    self.from.clone(),
+                    self.to.clone(),
+                )),
+                col_defs: (
+                    ColumnDefinition((
+                        Sanitize((self.from.table_name_snake_case(), "_id")),
+                        TypeAsSyntax(PhantomData::<i64>),
+                        NotNull,
+                        ForeignKey {
+                            references_table: self.from.table_name_pascal_case(),
+                            references_col: self.from.id().identifier(),
+                            ons: (OnDeleteCascase,),
+                        },
+                    )),
+                    ColumnDefinition((
+                        Sanitize((self.to.table_name_snake_case(), "_id")),
+                        TypeAsSyntax(PhantomData::<i64>),
+                        NotNull,
+                        ForeignKey {
+                            references_table: self.to.table_name_pascal_case(),
+                            references_col: self.to.id().identifier(),
+                            ons: (OnDeleteCascase,),
+                        },
+                    )),
+                    CompositePrimaryKey(Join {
+                        start: "",
+                        separator: ", ",
+                        items: (
+                            Sanitize((self.from.table_name_snake_case(), "_id")),
+                            Sanitize((self.to.table_name_snake_case(), "_id")),
+                        ),
+                    }),
+                ),
             }
         }
-        type NumAliased = ManyToManyItems<F::NumAliased, Ti::NumAliased, Ta::NumAliased>;
-        fn num_aliased(&self, num: usize, alias: &'static str) -> Self::NumAliased {
-            ManyToManyItems {
-                from_id: self.from_id.num_aliased(num, alias),
-                to_id: self.to_id.num_aliased(num, alias),
-                to_attributes: self.to_attributes.num_aliased(num, alias),
-            }
-        }
     }
 
-    impl<FromId, ToId, ToAttributes> IsOpExpression for ManyToManyItems<FromId, ToId, ToAttributes> {
-        fn is_op(&self) -> bool {
-            true
-        }
-    }
+    #[cfg(test)]
+    mod test {
+        use crate::{
+            links::{DefaultRelationKey, relation_many_to_many::ManyToMany},
+            operations::operations_expressions_crossover::MigrateExpression,
+            sqlx_query_builder::StatementBuilder,
+            test_module::{TagHandler, TodoHandler},
+        };
 
-    impl<'q, S, FromId, ToId, ToAttributes> ManyExpressions<'q, S>
-        for ManyToManyItems<FromId, ToId, ToAttributes>
-    where
-        S: DatabaseExt,
-        FromId: ManyExpressions<'q, S>,
-        ToId: ManyExpressions<'q, S>,
-        ToAttributes: ManyExpressions<'q, S>,
-    {
-        fn expression(
-            self,
-            start: &'static str,
-            join: &'static str,
-            ctx: &mut StatementBuilder<'q, S>,
-        ) {
-            ManyFlat((self.to_id, self.to_attributes)).expression(start, join, ctx);
-        }
-    }
+        #[test]
+        fn on_migrate() {
+            let sl = StatementBuilder::<sqlx::Sqlite>::new_no_data(
+                ManyToMany::<false, _, _, _> {
+                    relation_key: DefaultRelationKey,
+                    from: TodoHandler,
+                    to: TagHandler,
+                }
+                .migrate(),
+            )
+            .unwrap();
 
-    impl<FromId, To> FromRowData for ManyToManyItems<FromId, To::Id, To>
-    where
-        FromId: CollectionId,
-        To: FromRowData + Collection,
-        To::Id: FromRowData,
-    {
-        type RData = (
-            FromId::IdData,
-            Option<(<To::Id as CollectionId>::IdData, To::OutputData)>,
-        );
-    }
-
-    impl<'r, R, FromId, To> FromRowAlias<'r, R> for ManyToManyItems<FromId, To::Id, To>
-    where
-        FromId: CollectionId + FromRowAlias<'r, R, RData = <FromId as CollectionId>::IdData>,
-        To: Collection,
-        To: FromRowAlias<'r, R, RData = <To as Collection>::OutputData>,
-        To::Id: TryFromRowAlias<'r, R, RData = <To::Id as CollectionId>::IdData>,
-        R: sqlx::Row,
-        for<'q> &'q str: sqlx::ColumnIndex<R>,
-    {
-        fn no_alias(&self, row: &'r R) -> Result<Self::RData, crate::from_row::FromRowError> {
-            let _ = row;
-            todo!()
-        }
-
-        fn pre_alias(
-            &self,
-            row: crate::from_row::RowPreAliased<'r, R>,
-        ) -> Result<Self::RData, crate::from_row::FromRowError>
-        where
-            R: sqlx::Row,
-        {
-            let try_to_find_id = self.to_id.try_pre_alias(row.clone())?;
-            let found = if let Some(found) = try_to_find_id {
-                Some((found, self.to_attributes.pre_alias(row.clone())?))
-            } else {
-                None
-            };
-
-            Ok((self.from_id.pre_alias(pre_alias_to_base_id(row))?, found))
-        }
-
-        fn post_alias(
-            &self,
-            _: crate::from_row::RowPostAliased<'r, R>,
-        ) -> Result<Self::RData, crate::from_row::FromRowError>
-        where
-            R: sqlx::Row,
-        {
-            panic!("to be deprecated")
-        }
-
-        fn two_alias(
-            &self,
-            row: crate::from_row::RowTwoAliased<'r, R>,
-        ) -> Result<Self::RData, crate::from_row::FromRowError>
-        where
-            R: sqlx::Row,
-        {
-            let try_to_find_id = self.to_id.try_two_alias(row.clone())?;
-            let found = if let Some(found) = try_to_find_id {
-                Some((found, self.to_attributes.two_alias(row.clone())?))
-            } else {
-                None
-            };
-
-            Ok((self.from_id.two_alias(two_alias_to_base_id(row))?, found))
-        }
-    }
-}
-
-mod many_to_many_joins {
-    use crate::{
-        database_extention::DatabaseExt,
-        sqlx_query_builder::{Expression, ManyExpressions, OpExpression, StatementBuilder},
-    };
-
-    #[allow(dead_code)]
-    pub struct ManyToManyJoins<JunctionJoin, ToJoin>(pub JunctionJoin, pub ToJoin);
-
-    impl<JunctionJoin, ToJoin> OpExpression for ManyToManyJoins<JunctionJoin, ToJoin> {}
-
-    impl<'q, S, JunctionJoin, ToJoin> Expression<'q, S> for ManyToManyJoins<JunctionJoin, ToJoin>
-    where
-        S: DatabaseExt,
-        JunctionJoin: ManyExpressions<'q, S> + 'q,
-        ToJoin: ManyExpressions<'q, S> + 'q,
-    {
-        fn expression(self, ctx: &mut StatementBuilder<'q, S>) {
-            self.0.expression(" ", " ", ctx);
-            if self.1.is_op() {
-                self.1.expression(" ", " ", ctx);
-            }
+            pretty_assertions::assert_eq!(
+                sl,
+                r#"CREATE TABLE "ct_todo_tag_def" ("todo_id" INTEGER NOT NULL REFERENCES "Todo"("id") ON DELETE CASCADE, "tag_id" INTEGER NOT NULL REFERENCES "Tag"("id") ON DELETE CASCADE, PRIMARY KEY ("todo_id", "tag_id"));"#
+            );
         }
     }
 }
 
 mod impl_link_fetch_many {
-    use std::collections::HashSet;
+    use std::collections::{HashMap};
 
     use crate::{
-        collections::{Collection, CollectionId, SingleColumnId},
-        extentions::{
-            Members,
-            common_expressions::{Aliased, TableNameExpression},
-        },
-        from_row::FromRowData,
-        links::relation_many_to_many::ManyToMany,
-        operations::{
+        collections::{Collection, CollectionId, SingleColumnId}, from_row::FromRowData, links::{junction_table_op::FetchJunction, relation_many_to_many::ManyToMany}, operations::{
             CollectionOutput, ManyLinkOutput, OperationOutput,
-            fetch_linked_records::{FetchManyToManyLinked, ManyToManyLinkedMap},
             fetch_many::LinkFetch,
+            map_operation::MapOperation,
+            operations_expressions_crossover::{
+                ExpressionsForOperation, IdentifierColNames, TableExpressions,
+            },
+        }, sqlx_query_builder::{
+            Bind, basic_expressions::ColumnIn, sanitize_combinator::Sanitize,
         },
     };
 
-    impl<Key, From, To> LinkFetch for ManyToMany<Key, From, To>
+    impl<const INVERSE: bool, Key, From, To> LinkFetch for ManyToMany<INVERSE, Key, From, To>
     where
         Key: Clone + AsRef<str>,
-        From: Collection<Id: SingleColumnId + Aliased> + TableNameExpression + Clone,
-        To: Collection<Id: SingleColumnId> + TableNameExpression + Members + Clone,
+        From: Collection<Id: SingleColumnId + ExpressionsForOperation> + TableExpressions + Clone,
+        <From as TableExpressions>::SnakeCase: AsRef<str>,
+        To: Collection<Id: SingleColumnId> + TableExpressions + Clone,
+        To: ExpressionsForOperation<Identifier: IdentifierColNames>,
+        <To as TableExpressions>::SnakeCase: AsRef<str>,
+        <To as TableExpressions>::PascalCase: AsRef<str>,
+        To::InputData: crate::tuple_trait::AsTuple,
         <From::Id as CollectionId>::IdData: Copy + Clone + std::hash::Hash + Eq,
         From::Id: FromRowData<RData = <From::Id as CollectionId>::IdData>,
-        FetchManyToManyLinked<Key, From, To>: OperationOutput<
-            Output = ManyToManyLinkedMap<
-                <From::Id as CollectionId>::IdData,
-                <To::Id as CollectionId>::IdData,
-                To::OutputData,
-            >,
-        >,
     {
         type SelectItems = From::Id;
 
@@ -424,10 +289,23 @@ mod impl_link_fetch_many {
 
         fn where_expressions(&self) -> Self::Wheres {}
 
-        type Op = FetchManyToManyLinked<Key, From, To>;
-
-        type Output =
-            ManyLinkOutput<CollectionOutput<<To::Id as CollectionId>::IdData, To::OutputData>>;
+        type Op = MapOperation<
+            FetchJunction<
+                true,
+                INVERSE,
+                Key,
+                From,
+                To,
+                ColumnIn<
+                    Sanitize<(<From as TableExpressions>::SnakeCase, &'static str)>,
+                    Vec<Bind<<From::Id as CollectionId>::IdData>>,
+                >,
+            >,
+            HashMap<
+                <From::Id as CollectionId>::IdData,
+                ManyLinkOutput<CollectionOutput<<To::Id as CollectionId>::IdData, To::OutputData>>,
+            >,
+        >;
 
         fn take_many(
             &self,
@@ -438,11 +316,17 @@ mod impl_link_fetch_many {
             Self::SelectItems: FromRowData,
         {
             ManyLinkOutput {
-                many_output: op.remove(&from_id).unwrap_or_default(),
+                many_output: op
+                    .remove(&from_id)
+                    .map(|e| e.many_output)
+                    .unwrap_or_default(),
             }
         }
 
-        type OpInput = Vec<<From::Id as CollectionId>::IdData>;
+        type Output =
+            ManyLinkOutput<CollectionOutput<<To::Id as CollectionId>::IdData, To::OutputData>>;
+
+        type OpInput = Vec<Bind<<From::Id as CollectionId>::IdData>>;
 
         fn operation_initialize_input(&self) -> Self::OpInput {
             Vec::new()
@@ -455,62 +339,503 @@ mod impl_link_fetch_many {
         ) where
             Self::SelectItems: FromRowData,
         {
-            input.push(*from_id);
+            input.push(Bind(from_id.clone()));
         }
 
         fn operation_construct(&self, input: Self::OpInput) -> Self::Op
         where
             Self::SelectItems: FromRowData,
         {
-            let mut seen = HashSet::new();
-            let from_ids = input.into_iter().filter(|id| seen.insert(*id)).collect();
-            FetchManyToManyLinked::new(self.clone(), from_ids)
+            MapOperation {
+                operation: FetchJunction {
+                    key: self.relation_key.clone(),
+                    from: self.from.clone(),
+                    to: self.to.clone(),
+                    wheres: ColumnIn {
+                        col: Sanitize((self.from.table_name_snake_case(), "_id")),
+                        values: input,
+                    },
+                },
+                map_fn: |items| {
+                    let mut ret = HashMap::new();
+                    for (from_id, to_row) in items {
+                        ret.entry(from_id)
+                            .or_insert_with(|| ManyLinkOutput {
+                                many_output: Vec::new(),
+                            })
+                            .many_output
+                            .push(to_row);
+                    }
+                    ret
+                },
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod test {
+        use sqlx::Sqlite;
+
+        use crate::{
+            connect_in_memory::ConnectInMemory,
+            links::{DefaultRelationKey, relation_many_to_many::ManyToMany},
+            operations::{
+                CollectionOutput, LinkedOutput, ManyLinkOutput, Operation,
+                fetch_many::{FetchMany, ManyOutput},
+            },
+            test_module::{Tag, TagHandler, Todo, TodoHandler, todo_members},
+            track_sqlx_query::watch_sqlx_calls,
+        };
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn fetch_many() {
+            watch_sqlx_calls(async |actions| {
+                let mut conn = Sqlite::in_memory_connection().await;
+
+                sqlx::query(
+                    r#"
+                    CREATE TABLE "Tag" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL);
+                    CREATE TABLE "Todo" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL, "done" BOOLEAN NOT NULL, "description" TEXT);
+                    CREATE TABLE "ct_todo_tag_def" ("todo_id" INTEGER NOT NULL REFERENCES "Todo"("id") ON DELETE CASCADE, "tag_id" INTEGER NOT NULL REFERENCES "Tag"("id") ON DELETE CASCADE, PRIMARY KEY ("todo_id", "tag_id"));
+                    INSERT INTO "Tag" ("title") VALUES ('urgent'), ('home');
+                    INSERT INTO "Todo" ("title", "done", "description") VALUES
+                        ('todo_a', true, 'a'),
+                        ('todo_not_link', true, NULL),
+                        ('todo_b', false, 'b');
+                    INSERT INTO "ct_todo_tag_def" ("todo_id", "tag_id") VALUES
+                        (1, 1),
+                        (1, 2),
+                        (3, 1);
+                    "#,
+                )
+                .execute(&mut conn)
+                .await
+                .unwrap();
+                actions.clear();
+
+                let output = Operation::<Sqlite>::exec_operation(
+                    FetchMany {
+                        base: TodoHandler,
+                        wheres: (),
+                        links: ManyToMany::<false,_,_,_> {
+                            relation_key: DefaultRelationKey,
+                            from: TodoHandler,
+                            to: TagHandler,
+                        },
+                        cursor_order_by: todo_members::id,
+                        cursor_first_item: (), 
+                        limit: 10,
+                    },
+                    &mut conn,
+                )
+                .await;
+
+                pretty_assertions::assert_eq!(
+                    actions.take(),
+                    vec![
+                        format!("SELECT {todo_members}, {link_member} {rest}",
+                            todo_members = r#""Todo"."id" AS "iid", "Todo"."title" AS "btitle", "Todo"."done" AS "bdone", "Todo"."description" AS "bdescription""#,
+                            link_member = r#""Todo"."id" AS "lid""#,
+                            rest = r#"FROM "Todo" ORDER BY "Todo"."id" LIMIT $1;"#
+                        ),
+                        format!("SELECT {from_id}, {tab_members} FROM \"ct_todo_tag_def\" {join} {wheres}",
+                            from_id = r#""ct_todo_tag_def"."todo_id" AS "from_id""#,
+                            tab_members = r#""ct_todo_tag_def"."tag_id" AS "to_id", "Tag"."title" AS "t_title""#,
+                            join = r#"INNER JOIN "Tag" ON "ct_todo_tag_def"."tag_id" = "Tag"."id""#,
+                            wheres = r#"WHERE "todo_id" IN ($1, $2, $3);"#
+                        )
+                    ]
+                );
+
+                pretty_assertions::assert_eq!(
+                    output,
+                    ManyOutput {
+                        items: vec![
+                            LinkedOutput {
+                                id: 1,
+                                attributes: Todo {
+                                    title: "todo_a".to_string(),
+                                    done: true,
+                                    description: Some("a".to_string()),
+                                },
+                                links: ManyLinkOutput {
+                                    many_output: vec![
+                                        CollectionOutput {
+                                            id: 1,
+                                            attributes: Tag {
+                                                title: "urgent".to_string(),
+                                            },
+                                        },
+                                        CollectionOutput {
+                                            id: 2,
+                                            attributes: Tag {
+                                                title: "home".to_string(),
+                                            },
+                                        },
+                                    ],
+                                },
+                            },
+                            LinkedOutput {
+                                id: 2,
+                                attributes: Todo {
+                                    title: "todo_not_link".to_string(),
+                                    done: true,
+                                    description: None,
+                                },
+                                links: ManyLinkOutput {
+                                    many_output: vec![]
+                                },
+                            },
+                            LinkedOutput {
+                                id: 3,
+                                attributes: Todo {
+                                    title: "todo_b".to_string(),
+                                    done: false,
+                                    description: Some("b".to_string()),
+                                },
+                                links: ManyLinkOutput {
+                                    many_output: vec![CollectionOutput {
+                                        id: 1,
+                                        attributes: Tag {
+                                            title: "urgent".to_string(),
+                                        },
+                                    },],
+                                },
+                            },
+                        ],
+                        next_item: None,
+                    }
+                );
+            })
+            .await;
         }
     }
 }
 
-pub type ManyToManyFetchOne<Key, From, To> = ManyToMany<Key, From, To>;
+mod impl_many_to_many_set_new {
+    use std::marker::PhantomData;
 
-mod impl_mutate_links {
+    use crate::{
+        collections::{Collection, CollectionId, SingleColumnId}, from_row::FromRowData, links::{
+            relation_many_to_many::{InsertJunctionManyRows, ManyToMany},
+            update_links::SetNew,
+        }, operations::{
+            CollectionOutput, ManyLinkOutput, OperationOutput,
+            insert::{
+                AbortOperation, ConstraintViolation, InsertLinkConsumeData, InsertLinkData,
+                InsertOne, InsertOneLink,
+            },
+        }, sqlx_query_builder::statements::insert_statement::IteratorSpec,
+    };
+
+    impl<const INVERSE: bool, Key, From, To, I> InsertLinkConsumeData
+        for SetNew<ManyToMany<INVERSE, Key, From, To>, IteratorSpec<I>>
+    where
+        I: IntoIterator<Item = To::InputData>,
+        From: Collection<Id: SingleColumnId + FromRowData> + Clone,
+        To: Collection<Id: SingleColumnId> + Clone,
+        <To::Id as CollectionId>::IdData: Clone,
+        Key: Clone + AsRef<str>,
+    {
+        type Link = SetNew<ManyToMany<INVERSE, Key, From, To>, PhantomData<IteratorSpec<I>>>;
+
+        fn consume_data(
+            self,
+        ) -> (
+            Self::Link,
+            InsertLinkData<
+                <Self::Link as InsertOneLink>::PreOpData,
+                <Self::Link as InsertOneLink>::InsertValuesData,
+                <Self::Link as InsertOneLink>::PostOpData,
+            >,
+        ) {
+            (
+                SetNew {
+                    relation: self.relation,
+                    data: PhantomData,
+                },
+                InsertLinkData {
+                    pre_op_data: self.data,
+                    insert_value_data: (),
+                    post_op_data: (),
+                },
+            )
+        }
+    }
+
+    impl<const INVERSE: bool, Key, From, To, I> InsertOneLink
+        for SetNew<ManyToMany<INVERSE, Key, From, To>, PhantomData<IteratorSpec<I>>>
+    where
+        I: IntoIterator<Item = To::InputData>,
+        To: Collection<Id: SingleColumnId> + Clone,
+        From: Collection<Id: SingleColumnId + FromRowData> + Clone,
+        <To::Id as CollectionId>::IdData: Clone,
+        Key: Clone + AsRef<str>,
+        From: Clone,
+        To: Clone,
+    {
+        type PreOp = InsertOne<To, IteratorSpec<I>, AbortOperation>;
+        type PreOpData = IteratorSpec<I>;
+        type InsertValuesData = ();
+        type PostOpData = ();
+
+        fn pre_operation_init(&self, data: Self::PreOpData) -> Self::PreOp {
+            InsertOne {
+                handler: self.relation.to.clone(),
+                data,
+                infalibility: AbortOperation,
+            }
+        }
+
+        fn pre_op_split(
+            &self,
+            pre_op_output: <Self::PreOp as OperationOutput>::Output,
+        ) -> Result<
+            (
+                Self::PreOpToInsertValue,
+                Self::PreOpToTake,
+                Self::PreOpToPostOp,
+            ),
+            ConstraintViolation,
+        > {
+            let tag_ids = pre_op_output
+                .iter()
+                .map(|row| row.id.clone())
+                .collect::<Vec<_>>();
+            Ok(((), pre_op_output, tag_ids))
+        }
+
+        type PreOpToInsertValue = ();
+        type PreOpToTake = Vec<CollectionOutput<<To::Id as CollectionId>::IdData, To::OutputData>>;
+        type PreOpToPostOp = Vec<<To::Id as CollectionId>::IdData>;
+
+        type InsertReturning = ();
+        fn insert_returning(&self) -> Self::InsertReturning {}
+
+        type InsertSets = ();
+        fn insert_value(&self, _: Self::InsertValuesData, _: Self::PreOpToInsertValue) -> Self::InsertSets {}
+
+        type FromRow = From::Id;
+        fn from_row(&self) -> Self::FromRow {
+            self.relation.from.id()
+        }
+
+        type TakeInput = ();
+
+        type PostOp = InsertJunctionManyRows<
+            INVERSE,
+            Key,
+            From,
+            To,
+            Vec<<To::Id as CollectionId>::IdData>,
+        >;
+
+        fn from_row_result(
+            &self,
+            _: Self::PostOpData,
+            from_id: <Self::FromRow as FromRowData>::RData,
+            to_ids: Self::PreOpToPostOp,
+        ) -> (Self::PostOp, Self::TakeInput) {
+            (
+                InsertJunctionManyRows {
+                    relation: self.relation.clone(),
+                    from_id,
+                    to_ids,
+                },
+                (),
+            )
+        }
+
+        type PostOpOutput = ();
+        fn post_op_output(
+            &self,
+            _: <Self::PostOp as OperationOutput>::Output,
+        ) -> Result<Self::PostOpOutput, ConstraintViolation> {
+            Ok(())
+        }
+
+        type Output = ManyLinkOutput<CollectionOutput<<To::Id as CollectionId>::IdData, To::OutputData>>;
+
+        fn take(
+            self,
+            _: Self::PostOpOutput,
+            _: Self::TakeInput,
+            tags: Self::PreOpToTake,
+        ) -> Self::Output {
+            ManyLinkOutput { many_output: tags }
+        }
+    }
+
+    #[cfg(test)]
+    mod test {
+        use sqlx::Sqlite;
+
+        use crate::{
+            connect_in_memory::ConnectInMemory,
+            links::{DefaultRelationKey, relation_many_to_many::ManyToMany, update_links::SetNew},
+            operations::{
+                CollectionOutput, LinkedOutput, ManyLinkOutput, Operation,
+                insert::{AbortOperation, InsertEntity, InsertOne},
+            },
+            sqlx_query_builder::statements::insert_statement::IteratorSpec,
+            test_module::{Tag, TagHandler, Todo, TodoHandler},
+            track_sqlx_query::watch_sqlx_calls,
+        };
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn insert_new() {
+            watch_sqlx_calls(async |actions| {
+                let mut conn = Sqlite::in_memory_connection().await;
+
+                sqlx::query(
+                    r#"
+                    CREATE TABLE "Tag" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL);
+                    CREATE TABLE "Todo" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL, "done" BOOLEAN NOT NULL, "description" TEXT);
+                    CREATE TABLE "ct_todo_tag_def" ("todo_id" INTEGER NOT NULL REFERENCES "Todo"("id") ON DELETE CASCADE, "tag_id" INTEGER NOT NULL REFERENCES "Tag"("id") ON DELETE CASCADE, PRIMARY KEY ("todo_id", "tag_id"));
+                    "#,
+                )
+                .execute(&mut conn)
+                .await
+                .unwrap();
+                actions.clear();
+
+                let output = Operation::<Sqlite>::exec_operation(
+                    InsertOne {
+                        handler: TodoHandler,
+                        data: InsertEntity {
+                            attributes: Todo {
+                                title: "todo_a".to_string(),
+                                done: true,
+                                description: Some("a".to_string()),
+                            },
+                            link: SetNew {
+                                relation: ManyToMany::<false, _, _, _> {
+                                    relation_key: DefaultRelationKey,
+                                    from: TodoHandler,
+                                    to: TagHandler,
+                                },
+                                data: IteratorSpec(vec![
+                                    Tag {
+                                        title: "urgent".to_string(),
+                                    },
+                                    Tag {
+                                        title: "home".to_string(),
+                                    },
+                                ]),
+                            },
+                        },
+                        infalibility: AbortOperation,
+                    },
+                    &mut conn,
+                )
+                .await;
+
+                pretty_assertions::assert_eq!(
+                    actions.take(),
+                    vec![
+                        r#"INSERT INTO "Tag" ("title") VALUES ($1), ($2) RETURNING "id", "title";"#,
+                        r#"INSERT INTO "Todo" ("title", "done", "description") VALUES ($1, $2, $3) RETURNING "id", "title", "done", "description";"#,
+                        r#"INSERT INTO "ct_todo_tag_def" ("todo_id", "tag_id") VALUES ($1, $2), ($3, $4);"#,
+                    ]
+                );
+
+                pretty_assertions::assert_eq!(
+                    output,
+                    LinkedOutput {
+                        id: 1,
+                        attributes: Todo {
+                            title: "todo_a".to_string(),
+                            done: true,
+                            description: Some("a".to_string()),
+                        },
+                        links: ManyLinkOutput {
+                            many_output: vec![
+                                CollectionOutput {
+                                    id: 1,
+                                    attributes: Tag {
+                                        title: "urgent".to_string(),
+                                    },
+                                },
+                                CollectionOutput {
+                                    id: 2,
+                                    attributes: Tag {
+                                        title: "home".to_string(),
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                );
+            })
+            .await;
+        }
+    }
+}
+
+
+pub mod junction_from_id_set {
+    use crate::{
+        collections::Collection,
+        operations::operations_expressions_crossover::{
+            ExpressionsForOperation, SelfPrescribedInsert, TableExpressions,
+        },
+        sqlx_query_builder::basic_expressions::{Bind, UpdatingColumn},
+    };
+
+    pub struct JunctionFromIdSet<From, B> {
+        pub from: From,
+        pub bind: B,
+    }
+
+    impl<From, B> SelfPrescribedInsert for JunctionFromIdSet<From, B>
+    where
+        From: TableExpressions + Collection<Id: ExpressionsForOperation>,
+        B: Copy,
+    {
+        type InsertValue = B;
+        type InsertId = ();
+        fn on_insert(self) -> (Self::InsertId, Self::InsertValue) {
+            ((), self.bind)
+        }
+        type UpdateSets =
+            UpdatingColumn<<From::Id as ExpressionsForOperation>::Identifier, Option<Bind<B>>>;
+        fn on_update(self) -> Self::UpdateSets {
+            UpdatingColumn {
+                col: self.from.id().identifier(),
+                set: Some(Bind(self.bind)),
+            }
+        }
+    }
+}
+
+mod impl_set_id_for_insert {
     use std::marker::PhantomData;
 
     use crate::{
         collections::{Collection, CollectionId, SingleColumnId},
-        expressions::{ColumnEqual, single_col_expressions::UpdatingCol},
-        extentions::{
-            Members,
-            common_expressions::{Identifier, Scoped, TableNameExpression},
-        },
-        from_row::FromRowData,
+        from_row::{FromRowData, named_col_from_row::NamedColFromRow},
         links::{
-            relation_many_to_many::ManyToMany,
-            relation_optional_to_many::find_place_for_this::OneColumn, update_links::SetId,
+            fetch_linked_records::InsertJunctionAndFetch, relation_many_to_many::ManyToMany,
+            update_links::SetId,
         },
         operations::{
-            CollectionOutput, LinkedOutput, ManyLinkOutput, OperationOutput,
-            delete::{DeleteLink, DeleteLinkData, DeleteLinkPreOp, DeleteLinkSplit},
-            fetch_linked_records::{FetchManyToManyLinked, ManyToManyLinkedMap},
-            fetch_one::FetchOne,
-            insert_one::{
-                ConstraintViolation, InsertLinkConsumeData, InsertLinkData, InsertOneLink,
-            },
-            junction::{DeleteJunctionRow, InsertJunctionAndFetch, InsertJunctionRow},
-            update::{UpdateLink, UpdateLinkData, UpdateLinkSplit},
+            CollectionOutput, LinkedOutput, OperationOutput,
+            insert::{ConstraintViolation, InsertLinkConsumeData, InsertLinkData, InsertOneLink},
         },
     };
 
     impl<Key, From, To> InsertLinkConsumeData
-        for SetId<ManyToMany<Key, From, To>, <To::Id as CollectionId>::IdData>
+        for SetId<ManyToMany<false, Key, From, To>, <To::Id as CollectionId>::IdData>
     where
-        To: Collection<Id: SingleColumnId + Identifier> + TableNameExpression + Members + Clone,
-        From: Collection<Id: SingleColumnId + Identifier> + TableNameExpression + Clone,
+        To: Collection<Id: SingleColumnId> + Clone,
+        From: Collection<Id: SingleColumnId> + Clone,
         <From::Id as CollectionId>::IdData: Into<i64>,
         <To::Id as CollectionId>::IdData: Into<i64>,
         Key: Clone + AsRef<str>,
         From: Clone,
         To: Clone,
     {
-        type Link = SetId<ManyToMany<Key, From, To>, PhantomData<<To::Id as CollectionId>::IdData>>;
+        type Link = SetId<ManyToMany<false, Key, From, To>, PhantomData<<To::Id as CollectionId>::IdData>>;
 
         fn consume_data(
             self,
@@ -537,10 +862,10 @@ mod impl_mutate_links {
     }
 
     impl<Key, From, To> InsertOneLink
-        for SetId<ManyToMany<Key, From, To>, PhantomData<<To::Id as CollectionId>::IdData>>
+        for SetId<ManyToMany<false, Key, From, To>, PhantomData<<To::Id as CollectionId>::IdData>>
     where
-        To: Collection<Id: SingleColumnId + Identifier> + TableNameExpression + Members + Clone,
-        From: Collection<Id: SingleColumnId + Identifier> + TableNameExpression + Clone,
+        To: Collection<Id: SingleColumnId> + Clone,
+        From: Collection<Id: SingleColumnId> + Clone,
         <From::Id as CollectionId>::IdData: Into<i64>,
         <To::Id as CollectionId>::IdData: Into<i64>,
         Key: Clone + AsRef<str>,
@@ -564,18 +889,16 @@ mod impl_mutate_links {
         type PreOpToInsertValue = ();
         type PreOpToTake = ();
         type PreOpToPostOp = ();
-        type InsertNames = ();
-        fn insert_names(&self) -> Self::InsertNames {}
         type InsertReturning = ();
         fn insert_returning(&self) -> Self::InsertReturning {}
         type InsertValuesData = ();
-        type InsertValues = ();
-        fn insert_value(&self, _: Self::InsertValuesData, _: ()) -> Self::InsertValues {}
-        type FromRow = OneColumn<&'static str, <From::Id as CollectionId>::IdData>;
+        type InsertSets = ();
+        fn insert_value(&self, _: Self::InsertValuesData, _: ()) -> Self::InsertSets {}
+        type FromRow = NamedColFromRow<&'static str, <From::Id as CollectionId>::IdData>;
         fn from_row(&self) -> Self::FromRow {
-            OneColumn {
-                as_name: "id",
-                as_type: PhantomData,
+            NamedColFromRow {
+                name: "id",
+                ty: PhantomData,
             }
         }
         type TakeInput = ();
@@ -609,24 +932,42 @@ mod impl_mutate_links {
             pre_op.into()
         }
     }
+}
+
+mod impl_set_junzcction_id_for_update {
+    use crate::{
+        collections::{Collection, CollectionId, SingleColumnId},
+        links::{
+            fetch_linked_records::InsertJunctionRow,
+            relation_many_to_many::{ManyToMany, junction_from_id_set::JunctionFromIdSet},
+        },
+        operations::{
+            CollectionOutput, LinkedOutput, OperationOutput,
+            fetch_one::FetchOne,
+            insert::ConstraintViolation,
+            operations_expressions_crossover::{ExpressionsForOperation, TableExpressions},
+            update::{UpdateLink, UpdateLinkData, UpdateLinkSplit},
+        },
+        sqlx_query_builder::basic_expressions::{Bind, ColumnEqual},
+    };
 
     #[derive(Clone)]
     pub struct SetJunctionId<Key, From, To> {
-        pub relation: ManyToMany<Key, From, To>,
+        pub relation: ManyToMany<false, Key, From, To>,
         pub from_id: i64,
         pub to_id: i64,
     }
 
     impl<Key, From, To> UpdateLinkSplit for SetJunctionId<Key, From, To>
     where
-        To: Collection<Id: SingleColumnId + Identifier> + TableNameExpression + Members + Clone,
+        To: Collection<Id: SingleColumnId + ExpressionsForOperation> + Clone,
         To::OutputData: Clone,
         <To::Id as CollectionId>::IdData: ::std::convert::From<i64> + Clone,
-        From: Collection<Id: SingleColumnId + Identifier + Scoped> + TableNameExpression + Clone,
+        From: Collection<Id: SingleColumnId + ExpressionsForOperation> + TableExpressions + Clone,
         Key: Clone + AsRef<str>,
         From: Clone,
         To: Clone,
-        ManyToMany<Key, From, To>: Clone,
+        ManyToMany<false, Key, From, To>: Clone,
     {
         type Link = Self;
         fn init_split(
@@ -655,9 +996,9 @@ mod impl_mutate_links {
 
     impl<Key, From, To> UpdateLink for SetJunctionId<Key, From, To>
     where
-        To: Collection<Id: SingleColumnId + Identifier> + TableNameExpression + Members + Clone,
-        From: Collection<Id: SingleColumnId + Identifier + Scoped> + TableNameExpression + Clone,
-        ManyToMany<Key, From, To>: Clone,
+        To: Collection<Id: SingleColumnId + ExpressionsForOperation> + Clone,
+        From: Collection<Id: SingleColumnId + ExpressionsForOperation> + TableExpressions + Clone,
+        ManyToMany<false, Key, From, To>: Clone,
         Key: Clone + AsRef<str>,
         From: Clone,
         To: Clone,
@@ -690,18 +1031,18 @@ mod impl_mutate_links {
         type InitSplitForWheres = ();
         type UpdateWhere = ();
         fn wheres(&self, _: Self::InitSplitForWheres) -> Self::UpdateWhere {}
-        type UpdateNames = ();
-        fn update_names(&self) -> Self::UpdateNames {}
+        type UpdateReturning = ();
+        fn update_names(&self) -> Self::UpdateReturning {}
         type InitSplitForUpdateValues = i64;
-        type UpdateValues = UpdatingCol<<From::Id as Identifier>::Identifier, Option<i64>>;
+        type UpdateSets = JunctionFromIdSet<From, i64>;
         fn update_values(
             &self,
             values: Self::InitSplitForUpdateValues,
             _: Self::PreOpSplitValues,
-        ) -> Self::UpdateValues {
-            UpdatingCol {
-                col: self.relation.from.id().identifier(),
-                set: Some(values),
+        ) -> Self::UpdateSets {
+            JunctionFromIdSet {
+                from: self.relation.from.clone(),
+                bind: values,
             }
         }
         type FromRow = ();
@@ -709,7 +1050,10 @@ mod impl_mutate_links {
         type PostOp = FetchOne<
             To,
             (),
-            ColumnEqual<<To::Id as Identifier>::Identifier, <To::Id as CollectionId>::IdData>,
+            ColumnEqual<
+                <To::Id as ExpressionsForOperation>::Identifier,
+                Bind<<To::Id as CollectionId>::IdData>,
+            >,
         >;
         type InitSplitPostOp = ();
         fn post_op(&self, _: Self::InitSplitPostOp, _: Self::PreOpSplitPostOp) -> Self::PostOp {
@@ -718,7 +1062,7 @@ mod impl_mutate_links {
                 links: (),
                 wheres: ColumnEqual {
                     col: self.relation.to.id().identifier(),
-                    eq: <To::Id as CollectionId>::IdData::from(self.to_id),
+                    eq: Bind(<To::Id as CollectionId>::IdData::from(self.to_id)),
                 },
             }
         }
@@ -744,23 +1088,136 @@ mod impl_mutate_links {
         }
     }
 
+    #[cfg(test)]
+    mod test {
+        use sqlx::Sqlite;
+
+        use crate::{
+            connect_in_memory::ConnectInMemory,
+            links::{
+                DefaultRelationKey,
+                relation_many_to_many::{ManyToMany, test_support::migrate_todo_tag_fixtures},
+            },
+            operations::{
+                CollectionOutput, Operation,
+                insert::AbortOperation,
+                update::Update,
+            },
+            sqlx_query_builder::basic_expressions::{Bind, ColumnEqual},
+            test_module::{Tag, TagHandler, TodoHandler, TodoPartial},
+            track_sqlx_query::watch_sqlx_calls,
+            update_mod::Update as PartialUpdate,
+        };
+
+        use super::SetJunctionId;
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn set_junction_id_links_tag() {
+            watch_sqlx_calls(async |actions| {
+                let mut conn = Sqlite::in_memory_connection().await;
+
+                let link = ManyToMany {
+                    relation_key: DefaultRelationKey,
+                    from: TodoHandler,
+                    to: TagHandler,
+                };
+                migrate_todo_tag_fixtures(&mut conn, &link).await;
+
+                sqlx::query(
+                    r#"
+                    INSERT INTO "Tag" ("title") VALUES ('urgent');
+                    INSERT INTO "Todo" ("title", "done", "description") VALUES ('todo', false, 'before');
+                    "#,
+                )
+                .execute(&mut conn)
+                .await
+                .unwrap();
+                actions.clear();
+
+                let out = Operation::<Sqlite>::exec_operation(
+                    Update {
+                        base: TodoHandler,
+                        partial: TodoPartial {
+                            title: PartialUpdate::Set("linked".to_string()),
+                            done: PartialUpdate::Keep,
+                            description: PartialUpdate::Keep,
+                        },
+                        wheres: ColumnEqual { col: "id", eq: Bind(1) },
+                        links: SetJunctionId {
+                            relation: link,
+                            from_id: 1,
+                            to_id: 1,
+                        },
+                        infalibility: AbortOperation,
+                    },
+                    &mut conn,
+                )
+                .await
+                .into_iter()
+                .next()
+                .unwrap();
+
+                pretty_assertions::assert_eq!(
+                    actions.take(),
+                    vec![
+                        r#"INSERT INTO "ct_todo_tag_def" ("todo_id", "tag_id") VALUES ($1, $2);"#
+                            .to_string(),
+                        r#"UPDATE "Todo" SET title = $1, "id" = $2 WHERE "id" = $3 RETURNING "id", "title", "done", "description";"#
+                            .to_string(),
+                        r#"SELECT "Tag"."id" AS "iid", "Tag"."title" AS "btitle" FROM "Tag" WHERE "id" = $1;"#
+                            .to_string(),
+                    ]
+                );
+
+                assert_eq!(
+                    out.links,
+                    CollectionOutput {
+                        id: 1,
+                        attributes: Tag {
+                            title: "urgent".to_string(),
+                        },
+                    }
+                );
+            })
+            .await;
+        }
+    }
+}
+
+mod impl_remove_junction_id_for_update {
+    use crate::{
+        collections::{Collection, CollectionId, SingleColumnId},
+        links::{
+            fetch_linked_records::DeleteJunctionRow,
+            relation_many_to_many::{ManyToMany, junction_from_id_set::JunctionFromIdSet},
+        },
+        operations::{
+            CollectionOutput, LinkedOutput, OperationOutput,
+            fetch_one::FetchOne,
+            insert::ConstraintViolation,
+            operations_expressions_crossover::{ExpressionsForOperation, TableExpressions},
+            update::{UpdateLink, UpdateLinkData, UpdateLinkSplit},
+        },
+        sqlx_query_builder::basic_expressions::{Bind, ColumnEqual},
+    };
+
     #[derive(Clone)]
     pub struct RemoveJunctionId<Key, From, To> {
-        pub relation: ManyToMany<Key, From, To>,
+        pub relation: ManyToMany<false, Key, From, To>,
         pub from_id: i64,
         pub to_id: i64,
     }
 
     impl<Key, From, To> UpdateLinkSplit for RemoveJunctionId<Key, From, To>
     where
-        To: Collection<Id: SingleColumnId + Identifier> + TableNameExpression + Members + Clone,
+        To: Collection<Id: SingleColumnId + ExpressionsForOperation> + Clone,
         To::OutputData: Clone,
         <To::Id as CollectionId>::IdData: ::std::convert::From<i64> + Clone,
-        From: Collection<Id: SingleColumnId + Identifier + Scoped> + TableNameExpression + Clone,
+        From: Collection<Id: SingleColumnId + ExpressionsForOperation> + TableExpressions + Clone,
         Key: Clone + AsRef<str>,
         From: Clone,
         To: Clone,
-        ManyToMany<Key, From, To>: Clone,
+        ManyToMany<false, Key, From, To>: Clone,
     {
         type Link = Self;
         fn init_split(
@@ -789,9 +1246,9 @@ mod impl_mutate_links {
 
     impl<Key, From, To> UpdateLink for RemoveJunctionId<Key, From, To>
     where
-        To: Collection<Id: SingleColumnId + Identifier> + TableNameExpression + Members + Clone,
-        From: Collection<Id: SingleColumnId + Identifier + Scoped> + TableNameExpression + Clone,
-        ManyToMany<Key, From, To>: Clone,
+        To: Collection<Id: SingleColumnId + ExpressionsForOperation> + Clone,
+        From: Collection<Id: SingleColumnId + ExpressionsForOperation> + TableExpressions + Clone,
+        ManyToMany<false, Key, From, To>: Clone,
         Key: Clone + AsRef<str>,
         From: Clone,
         To: Clone,
@@ -807,7 +1264,10 @@ mod impl_mutate_links {
         type PreOp = FetchOne<
             To,
             (),
-            ColumnEqual<<To::Id as Identifier>::Identifier, <To::Id as CollectionId>::IdData>,
+            ColumnEqual<
+                <To::Id as ExpressionsForOperation>::Identifier,
+                Bind<<To::Id as CollectionId>::IdData>,
+            >,
         >;
         fn pre_op(&self, _: Self::InitSplitForPreOp) -> Self::PreOp {
             FetchOne {
@@ -815,7 +1275,7 @@ mod impl_mutate_links {
                 links: (),
                 wheres: ColumnEqual {
                     col: self.relation.to.id().identifier(),
-                    eq: <To::Id as CollectionId>::IdData::from(self.to_id),
+                    eq: Bind(<To::Id as CollectionId>::IdData::from(self.to_id)),
                 },
             }
         }
@@ -836,18 +1296,18 @@ mod impl_mutate_links {
         type InitSplitForWheres = ();
         type UpdateWhere = ();
         fn wheres(&self, _: Self::InitSplitForWheres) -> Self::UpdateWhere {}
-        type UpdateNames = ();
-        fn update_names(&self) -> Self::UpdateNames {}
+        type UpdateReturning = ();
+        fn update_names(&self) -> Self::UpdateReturning {}
         type InitSplitForUpdateValues = i64;
-        type UpdateValues = UpdatingCol<<From::Id as Identifier>::Identifier, Option<i64>>;
+        type UpdateSets = JunctionFromIdSet<From, i64>;
         fn update_values(
             &self,
             values: Self::InitSplitForUpdateValues,
             _: Self::PreOpSplitValues,
-        ) -> Self::UpdateValues {
-            UpdatingCol {
-                col: self.relation.from.id().identifier(),
-                set: Some(values),
+        ) -> Self::UpdateSets {
+            JunctionFromIdSet {
+                from: self.relation.from.clone(),
+                bind: values,
             }
         }
         type FromRow = ();
@@ -879,10 +1339,28 @@ mod impl_mutate_links {
             }
         }
     }
+}
+
+mod impl_for_delete {
+    use crate::{
+        collections::{Collection, CollectionId, SingleColumnId},
+        from_row::FromRowData,
+        links::{
+            fetch_linked_records::{FetchManyToManyLinked, ManyToManyLinkedMap},
+            relation_many_to_many::ManyToMany,
+        },
+        operations::{
+            CollectionOutput, ManyLinkOutput,
+            delete::{DeleteLink, DeleteLinkData, DeleteLinkPreOp, DeleteLinkSplit},
+            operations_expressions_crossover::{
+                ExpressionsForOperation, IdentifierColNames, TableExpressions,
+            },
+        },
+    };
 
     #[derive(Clone)]
     pub struct DeleteManyToManyLinked<Key, From, To> {
-        pub link: ManyToMany<Key, From, To>,
+        pub link: ManyToMany<false, Key, From, To>,
         pub from_id: i64,
     }
 
@@ -906,10 +1384,13 @@ mod impl_mutate_links {
     impl<Wheres, Key, From, To> DeleteLinkPreOp<Wheres> for DeleteManyToManyLinked<Key, From, To>
     where
         Self: Clone,
-        From: Collection<Id: SingleColumnId> + Clone + TableNameExpression,
-        To: Collection<Id: SingleColumnId + Identifier> + Clone + TableNameExpression + Members,
-        <From as TableNameExpression>::LowerCaseTableNameExpression: AsRef<str>,
-        <To as TableNameExpression>::LowerCaseTableNameExpression: AsRef<str>,
+        From: Collection<Id: SingleColumnId> + Clone + TableExpressions,
+        To: Collection<Id: SingleColumnId> + Clone + TableExpressions,
+        To: ExpressionsForOperation<Identifier: IdentifierColNames>,
+        To::InputData: crate::tuple_trait::AsTuple,
+        <From as TableExpressions>::SnakeCase: AsRef<str>,
+        <To as TableExpressions>::SnakeCase: AsRef<str>,
+        <To as TableExpressions>::PascalCase: AsRef<str>,
         <From::Id as CollectionId>::IdData: ::std::convert::From<i64> + Copy + Eq + std::hash::Hash,
         Wheres: Clone,
         Key: Clone + AsRef<str>,
@@ -972,139 +1453,77 @@ mod impl_mutate_links {
             }
         }
     }
-}
 
-pub use crate::operations::fetch_linked_records::FetchManyToManyLinked;
-pub use impl_mutate_links::{DeleteManyToManyLinked, RemoveJunctionId, SetJunctionId};
+    #[cfg(test)]
+    mod test {
+        use sqlx::Sqlite;
 
-#[cfg(test)]
-mod test {
-    use sqlx::Sqlite;
-
-    use crate::{
-        collections::Collection,
-        connect_in_memory::ConnectInMemory,
-        expressions::ColumnEqual,
-        extentions::common_expressions::Scoped,
-        links::{DefaultRelationKey, relation_many_to_many::ManyToMany},
-        on_migrate::OnMigrate,
-        operations::{
-            CollectionOutput, LinkedOutput, ManyLinkOutput, Operation,
-            fetch_many::{FetchMany, ManyOutput},
-            fetch_one::FetchOne,
-        },
-        sqlx_query_builder::{Expression, StatementBuilder},
-        test_module::{self, Category, Tag, Todo},
-    };
-
-    fn todo_to_tag_link() -> ManyToMany<DefaultRelationKey, test_module::todo, test_module::tag> {
-        ManyToMany {
-            relation_key: DefaultRelationKey,
-            from: test_module::todo,
-            to: test_module::tag,
-        }
-    }
-
-    fn category_to_tag_link()
-    -> ManyToMany<DefaultRelationKey, test_module::category, test_module::tag> {
-        ManyToMany {
-            relation_key: DefaultRelationKey,
-            from: test_module::category,
-            to: test_module::tag,
-        }
-    }
-
-    async fn migrate_todo_tag_fixtures(
-        conn: &mut sqlx::SqliteConnection,
-        link: &ManyToMany<DefaultRelationKey, test_module::todo, test_module::tag>,
-    ) {
-        sqlx::query(
-            r#"
-            CREATE TABLE "Tag" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL);
-            CREATE TABLE "Todo" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL, "done" BOOLEAN NOT NULL, "description" TEXT);
-            "#,
-        )
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-
-        let mut qb = StatementBuilder::<Sqlite>::default();
-        link.statments().expression(&mut qb);
-        sqlx::query(&qb.stmt).execute(&mut *conn).await.unwrap();
-    }
-
-    async fn migrate_category_tag_fixtures(
-        conn: &mut sqlx::SqliteConnection,
-        link: &ManyToMany<DefaultRelationKey, test_module::category, test_module::tag>,
-    ) {
-        sqlx::query(
-            r#"
-            CREATE TABLE "Tag" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL);
-            CREATE TABLE "Category" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL);
-            "#,
-        )
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-
-        let mut qb = StatementBuilder::<Sqlite>::default();
-        link.statments().expression(&mut qb);
-        sqlx::query(&qb.stmt).execute(&mut *conn).await.unwrap();
-    }
-
-    #[test]
-    fn migrate_statement_creates_junction_table() {
-        let link = todo_to_tag_link();
-        let mut qb = StatementBuilder::<Sqlite>::default();
-        link.statments().expression(&mut qb);
-
-        pretty_assertions::assert_eq!(
-            qb.stmt,
-            r#"CREATE TABLE "ct_todotag_def" ("todo_id" INTEGER NOT NULL  REFERENCES "Todo"("id") ON DELETE CASCADE, "tag_id" INTEGER NOT NULL  REFERENCES "Tag"("id") ON DELETE CASCADE, PRIMARY KEY ("todo_id", "tag_id"));"#
-        );
-    }
-
-    #[tokio::test]
-    async fn fetch_many_returns_one_row_per_todo_with_all_tags() {
-        let mut conn = Sqlite::in_memory_connection().await;
-
-        let link = todo_to_tag_link();
-        migrate_todo_tag_fixtures(&mut conn, &link).await;
-
-        sqlx::query(
-            r#"
-            INSERT INTO "Tag" ("title") VALUES ('urgent'), ('home');
-            INSERT INTO "Todo" ("title", "done", "description") VALUES
-                ('todo_a', true, 'a'),
-                ('todo_b', false, 'b');
-            INSERT INTO "ct_todotag_def" ("todo_id", "tag_id") VALUES
-                (1, 1),
-                (1, 2),
-                (2, 1);
-            "#,
-        )
-        .execute(&mut conn)
-        .await
-        .unwrap();
-
-        let output = Operation::<Sqlite>::exec_operation(
-            FetchMany {
-                base: test_module::todo,
-                wheres: (),
-                links: link,
-                cursor_order_by: test_module::todo_members::id,
-                cursor_first_item: None::<(i64, ())>,
-                limit: 10,
+        use crate::{
+            connect_in_memory::ConnectInMemory,
+            links::{
+                DefaultRelationKey,
+                relation_many_to_many::{DeleteManyToManyLinked, ManyToMany},
             },
-            &mut conn,
-        )
-        .await;
+            operations::{
+                CollectionOutput, LinkedOutput, ManyLinkOutput, Operation, delete::Delete,
+            },
+            sqlx_query_builder::basic_expressions::{Bind, ColumnEqual},
+            test_module::{Tag, TagHandler, Todo, TodoHandler},
+            track_sqlx_query::watch_sqlx_calls,
+        };
 
-        pretty_assertions::assert_eq!(
-            output,
-            ManyOutput {
-                items: vec![
-                    LinkedOutput {
+        #[tokio::test(flavor = "current_thread")]
+        async fn delete_todo_returns_linked_tags() {
+            watch_sqlx_calls(async |actions| {
+                let mut conn = Sqlite::in_memory_connection().await;
+
+                sqlx::query(
+                    r#"
+                    CREATE TABLE "Tag" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL);
+                    CREATE TABLE "Todo" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL, "done" BOOLEAN NOT NULL, "description" TEXT);
+                    CREATE TABLE "ct_todo_tag_def" ("todo_id" INTEGER NOT NULL REFERENCES "Todo"("id") ON DELETE CASCADE, "tag_id" INTEGER NOT NULL REFERENCES "Tag"("id") ON DELETE CASCADE, PRIMARY KEY ("todo_id", "tag_id"));
+                    INSERT INTO "Tag" ("title") VALUES ('urgent'), ('home');
+                    INSERT INTO "Todo" ("title", "done", "description") VALUES ('todo_a', true, 'a');
+                    INSERT INTO "ct_todo_tag_def" ("todo_id", "tag_id") VALUES (1, 1), (1, 2);
+                    "#,
+                )
+                .execute(&mut conn)
+                .await
+                .unwrap();
+                actions.clear();
+
+                let link = ManyToMany {
+                    relation_key: DefaultRelationKey,
+                    from: TodoHandler,
+                    to: TagHandler,
+                };
+
+                let result = Operation::<Sqlite>::exec_operation(
+                    Delete {
+                        base: TodoHandler,
+                        wheres: ColumnEqual { col: "id", eq: Bind(1) },
+                        links: DeleteManyToManyLinked {
+                            link,
+                            from_id: 1,
+                        },
+                    },
+                    &mut conn,
+                )
+                .await;
+
+                pretty_assertions::assert_eq!(
+                    actions.take(),
+                    vec![
+                        r#"SELECT "ct_todo_tag_def"."todo_id" AS "from_id", "Tag"."id", "Tag"."title" FROM "ct_todo_tag_def" INNER JOIN "Tag" ON "ct_todo_tag_def"."tag_id" = "Tag"."id" WHERE "ct_todo_tag_def"."todo_id" IN ($1);"#
+                            .to_string(),
+                        r#"DELETE FROM "Todo" WHERE "id" = $1 RETURNING "id", "title", "done", "description";"#
+                            .to_string(),
+                    ]
+                );
+
+                pretty_assertions::assert_eq!(
+                    result,
+                    vec![LinkedOutput {
                         id: 1,
                         attributes: Todo {
                             title: "todo_a".to_string(),
@@ -1127,278 +1546,52 @@ mod test {
                                 },
                             ],
                         },
-                    },
-                    LinkedOutput {
-                        id: 2,
-                        attributes: Todo {
-                            title: "todo_b".to_string(),
-                            done: false,
-                            description: Some("b".to_string()),
-                        },
-                        links: ManyLinkOutput {
-                            many_output: vec![CollectionOutput {
-                                id: 1,
-                                attributes: Tag {
-                                    title: "urgent".to_string(),
-                                },
-                            },],
-                        },
-                    },
-                ],
-                next_item: None,
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn fetch_one_returns_all_linked_tags() {
-        let mut conn = Sqlite::in_memory_connection().await;
-
-        let link = todo_to_tag_link();
-        migrate_todo_tag_fixtures(&mut conn, &link).await;
-
-        sqlx::query(
-            r#"
-            INSERT INTO "Tag" ("title") VALUES ('urgent'), ('home');
-            INSERT INTO "Todo" ("title", "done", "description") VALUES
-                ('todo_a', true, 'a'),
-                ('todo_b', false, 'b');
-            INSERT INTO "ct_todotag_def" ("todo_id", "tag_id") VALUES
-                (1, 1),
-                (1, 2),
-                (2, 1);
-            "#,
-        )
-        .execute(&mut conn)
-        .await
-        .unwrap();
-
-        let output = Operation::<Sqlite>::exec_operation(
-            FetchOne {
-                base: test_module::todo,
-                wheres: ColumnEqual {
-                    col: test_module::todo.id().scoped(),
-                    eq: 1,
-                },
-                links: link,
-            },
-            &mut conn,
-        )
-        .await;
-
-        pretty_assertions::assert_eq!(
-            output,
-            Some(LinkedOutput {
-                id: 1,
-                attributes: Todo {
-                    title: "todo_a".to_string(),
-                    done: true,
-                    description: Some("a".to_string()),
-                },
-                links: ManyLinkOutput {
-                    many_output: vec![
-                        CollectionOutput {
-                            id: 1,
-                            attributes: Tag {
-                                title: "urgent".to_string(),
-                            },
-                        },
-                        CollectionOutput {
-                            id: 2,
-                            attributes: Tag {
-                                title: "home".to_string(),
-                            },
-                        },
-                    ],
-                },
+                    },]
+                );
             })
-        );
+            .await;
+        }
+    }
+}
+
+pub use impl_for_delete::DeleteManyToManyLinked;
+pub use impl_remove_junction_id_for_update::RemoveJunctionId;
+pub use impl_set_junzcction_id_for_update::SetJunctionId;
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use sqlx::Sqlite;
+
+    use crate::{
+        links::{DefaultRelationKey, relation_many_to_many::ManyToMany},
+        operations::operations_expressions_crossover::MigrateExpression,
+        sqlx_query_builder::StatementBuilder,
+        test_module::{TagHandler, TodoHandler},
+    };
+
+    pub fn todo_to_tag_link() -> ManyToMany<false, DefaultRelationKey, TodoHandler, TagHandler> {
+        ManyToMany::<false, _, _, _> {
+            relation_key: DefaultRelationKey,
+            from: TodoHandler,
+            to: TagHandler,
+        }
     }
 
-    #[tokio::test]
-    async fn fetch_many_from_category_returns_one_row_per_category_with_all_tags() {
-        let mut conn = Sqlite::in_memory_connection().await;
-
-        let link = category_to_tag_link();
-        migrate_category_tag_fixtures(&mut conn, &link).await;
-
+    pub async fn migrate_todo_tag_fixtures(
+        conn: &mut sqlx::SqliteConnection,
+        link: &ManyToMany<false, DefaultRelationKey, TodoHandler, TagHandler>,
+    ) {
         sqlx::query(
             r#"
-            INSERT INTO "Tag" ("title") VALUES ('urgent'), ('review');
-            INSERT INTO "Category" ("title") VALUES ('work'), ('personal');
-            INSERT INTO "ct_categorytag_def" ("category_id", "tag_id") VALUES
-                (1, 1),
-                (1, 2),
-                (2, 2);
+            CREATE TABLE "Tag" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL);
+            CREATE TABLE "Todo" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "title" TEXT NOT NULL, "done" BOOLEAN NOT NULL, "description" TEXT);
             "#,
         )
-        .execute(&mut conn)
+        .execute(&mut *conn)
         .await
         .unwrap();
 
-        let output = Operation::<Sqlite>::exec_operation(
-            FetchMany {
-                base: test_module::category,
-                wheres: (),
-                links: link,
-                cursor_order_by: test_module::category_members::id,
-                cursor_first_item: None::<(i64, ())>,
-                limit: 10,
-            },
-            &mut conn,
-        )
-        .await;
-
-        pretty_assertions::assert_eq!(
-            output,
-            ManyOutput {
-                items: vec![
-                    LinkedOutput {
-                        id: 1,
-                        attributes: Category {
-                            title: "work".to_string(),
-                        },
-                        links: ManyLinkOutput {
-                            many_output: vec![
-                                CollectionOutput {
-                                    id: 1,
-                                    attributes: Tag {
-                                        title: "urgent".to_string(),
-                                    },
-                                },
-                                CollectionOutput {
-                                    id: 2,
-                                    attributes: Tag {
-                                        title: "review".to_string(),
-                                    },
-                                },
-                            ],
-                        },
-                    },
-                    LinkedOutput {
-                        id: 2,
-                        attributes: Category {
-                            title: "personal".to_string(),
-                        },
-                        links: ManyLinkOutput {
-                            many_output: vec![CollectionOutput {
-                                id: 2,
-                                attributes: Tag {
-                                    title: "review".to_string(),
-                                },
-                            },],
-                        },
-                    },
-                ],
-                next_item: None,
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn fetch_many_without_links_returns_single_row_with_empty_links() {
-        let mut conn = Sqlite::in_memory_connection().await;
-
-        let link = todo_to_tag_link();
-        migrate_todo_tag_fixtures(&mut conn, &link).await;
-
-        sqlx::query(
-            r#"
-            INSERT INTO "Todo" ("title", "done", "description") VALUES ('lonely', false, NULL);
-            "#,
-        )
-        .execute(&mut conn)
-        .await
-        .unwrap();
-
-        let output = Operation::<Sqlite>::exec_operation(
-            FetchMany {
-                base: test_module::todo,
-                wheres: (),
-                links: link,
-                cursor_order_by: test_module::todo_members::id,
-                cursor_first_item: None::<(i64, ())>,
-                limit: 10,
-            },
-            &mut conn,
-        )
-        .await;
-
-        pretty_assertions::assert_eq!(
-            output,
-            ManyOutput {
-                items: vec![LinkedOutput {
-                    id: 1,
-                    attributes: Todo {
-                        title: "lonely".to_string(),
-                        done: false,
-                        description: None,
-                    },
-                    links: ManyLinkOutput {
-                        many_output: vec![]
-                    },
-                },],
-                next_item: None,
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn update_set_junction_id_links_tag() {
-        use super::SetJunctionId;
-        use crate::{
-            operations::update::Update,
-            test_module::{Tag, TodoPartial},
-            update_mod::Update as PartialUpdate,
-        };
-
-        let mut conn = Sqlite::in_memory_connection().await;
-
-        let link = todo_to_tag_link();
-        migrate_todo_tag_fixtures(&mut conn, &link).await;
-
-        sqlx::query(
-            r#"
-            INSERT INTO "Tag" ("title") VALUES ('urgent');
-            INSERT INTO "Todo" ("title", "done", "description") VALUES ('todo', false, 'before');
-            "#,
-        )
-        .execute(&mut conn)
-        .await
-        .unwrap();
-
-        let out = Operation::<Sqlite>::exec_operation(
-            Update {
-                base: test_module::todo,
-                partial: TodoPartial {
-                    title: PartialUpdate::Set("linked".to_string()),
-                    done: PartialUpdate::Keep,
-                    description: PartialUpdate::Keep,
-                },
-                wheres: ColumnEqual {
-                    col: test_module::todo.id().scoped(),
-                    eq: 1,
-                },
-                links: SetJunctionId {
-                    relation: link,
-                    from_id: 1,
-                    to_id: 1,
-                },
-            },
-            &mut conn,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(out.len(), 1);
-        assert_eq!(
-            out[0].links,
-            CollectionOutput {
-                id: 1,
-                attributes: Tag {
-                    title: "urgent".to_string(),
-                },
-            }
-        );
+        let sl = StatementBuilder::<Sqlite>::new_no_data(link.migrate()).unwrap();
+        sqlx::query(&sl).execute(&mut *conn).await.unwrap();
     }
 }

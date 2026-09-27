@@ -187,8 +187,8 @@ index adc049f..a8c4c7c 100644
 +               + 'static
 +               + use<'_> {
 +            let (tx, rx) = flume::bounded(chan_size);
-+            let before_move = self.command_tx.send_async((
-+                Command::Execute {
++            let before_move = self.command_tx.clone().into_send_async((
++                crate::connection::worker::Command::Execute {
 +                    query: query.into(),
 +                    arguments: args.map(SqliteArguments::into_static),
 +                    persistent,

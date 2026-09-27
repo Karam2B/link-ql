@@ -11,16 +11,27 @@ use sqlx::Database;
 
 use crate::{
     database_extention::DatabaseExt,
-    extentions::common_expressions::raw_from_row::RawFromRow,
     fix_executor::ExecutorTrait,
     from_row::FromRowData,
     gen_serde::{Serialize, json_serialize_side::JsonAsString},
+    json_client::compat::{
+        insert_sets::{
+            AggregatedInsertReturning, AggregatedInsertSets, DynIdentifierOnly,
+            DynSelfPrescribedInsert,
+        },
+        raw_from_row::RawFromRow,
+    },
     operations::{
         Operation, OperationOutput,
         boxed_operation::BoxedOperation,
-        insert_one::{ConstraintViolation, InsertLinkConsumeData, InsertLinkData, InsertOneLink},
+        insert::{ConstraintViolation, InsertLinkConsumeData, InsertLinkData, InsertOneLink},
+        operations_expressions_crossover::{IdentifierOnly, SelfPrescribedInsert},
     },
-    sqlx_query_builder::{basic_expressions::ManyFlat, trait_objects::ManyBoxedExpressions},
+    sqlx_query_builder::{
+        Expression, Join,
+        combinators::OptionalExpression,
+        trait_objects::{box_expression, BoxedExpression},
+    },
 };
 
 /// [`FromRowAlias`] that decodes one sub-row per link.
@@ -40,9 +51,9 @@ impl<'r, S: Database> crate::from_row::FromRowAlias<'r, S::Row> for JsonInsertLi
             .collect()
     }
 
-    fn pre_alias(
+    fn str_alias(
         &self,
-        row: crate::from_row::RowPreAliased<'r, S::Row>,
+        row: crate::from_row::RowStrAliased<'r, S::Row>,
     ) -> Result<Self::RData, crate::from_row::FromRowError>
     where
         S::Row: sqlx::Row,
@@ -50,24 +61,14 @@ impl<'r, S: Database> crate::from_row::FromRowAlias<'r, S::Row> for JsonInsertLi
         self.0
             .iter()
             .map(|from_row: &Box<dyn RawFromRow<S> + Send>| {
-                RawFromRow::dyn_pre_alias(&**from_row, row.clone())
+                RawFromRow::dyn_str_alias(&**from_row, row.clone())
             })
             .collect()
     }
 
-    fn post_alias(
+    fn num_alias(
         &self,
-        _: crate::from_row::RowPostAliased<'r, S::Row>,
-    ) -> Result<Self::RData, crate::from_row::FromRowError>
-    where
-        S::Row: sqlx::Row,
-    {
-        panic!("to be deprecated")
-    }
-
-    fn two_alias(
-        &self,
-        row: crate::from_row::RowTwoAliased<'r, S::Row>,
+        row: crate::from_row::RowNumAliased<'r, S::Row>,
     ) -> Result<Self::RData, crate::from_row::FromRowError>
     where
         S::Row: sqlx::Row,
@@ -75,7 +76,7 @@ impl<'r, S: Database> crate::from_row::FromRowAlias<'r, S::Row> for JsonInsertLi
         self.0
             .iter()
             .map(|from_row: &Box<dyn RawFromRow<S> + Send>| {
-                RawFromRow::dyn_two_alias(&**from_row, row.clone())
+                RawFromRow::dyn_num_alias(&**from_row, row.clone())
             })
             .collect()
     }
@@ -122,13 +123,12 @@ pub trait JsonInsertOneLink<S: Database>: Send + Sync + 'static {
         ),
         ConstraintViolation,
     >;
-    fn dyn_insert_names(&self) -> Box<dyn ManyBoxedExpressions<S> + Send>;
-    fn dyn_insert_returning(&self) -> Box<dyn ManyBoxedExpressions<S> + Send>;
+    fn dyn_insert_returning(&self) -> Box<dyn DynIdentifierOnly<S> + Send>;
     fn dyn_insert_value(
         &self,
         from_data: Box<dyn Any + Send>,
         pre_op_output: Box<dyn Any + Send>,
-    ) -> Box<dyn ManyBoxedExpressions<S> + Send>;
+    ) -> Box<dyn DynSelfPrescribedInsert<S> + Send>;
     fn dyn_from_row(&self) -> Box<dyn RawFromRow<S> + Send>;
     fn dyn_from_row_result(
         &self,
@@ -151,17 +151,21 @@ pub trait JsonInsertOneLink<S: Database>: Send + Sync + 'static {
 impl<T, S> JsonInsertOneLink<S> for T
 where
     T: Send + Sync + 'static,
-    S: sqlx::Database,
+    S: sqlx::Database + DatabaseExt,
     T: InsertOneLink,
     T::PreOpData: 'static,
     T::PreOp: Operation<S> + 'static,
     T::PreOpToInsertValue: Send + 'static,
     T::PreOpToTake: Send + 'static,
     T::PreOpToPostOp: Send + 'static,
-    T::InsertNames: Send + 'static + ManyBoxedExpressions<S>,
-    T::InsertReturning: Send + 'static + ManyBoxedExpressions<S>,
-    T::InsertValuesData: Send + 'static,
-    T::InsertValues: Send + 'static + ManyBoxedExpressions<S>,
+    T::InsertReturning: Send + 'static + IdentifierOnly,
+    <T::InsertReturning as IdentifierOnly>::Identifier: Send + OptionalExpression,
+    for<'e> Join<<T::InsertReturning as IdentifierOnly>::Identifier>: Expression<'e, S>,
+    T::InsertSets: Send + 'static + SelfPrescribedInsert,
+    <T::InsertSets as SelfPrescribedInsert>::InsertId: Send + OptionalExpression,
+    <T::InsertSets as SelfPrescribedInsert>::InsertValue: Send + OptionalExpression,
+    for<'e> Join<<T::InsertSets as SelfPrescribedInsert>::InsertId>: Expression<'e, S>,
+    for<'e> Join<<T::InsertSets as SelfPrescribedInsert>::InsertValue>: Expression<'e, S>,
     T::FromRow: Send + 'static + RawFromRow<S>,
     T::PostOpData: Send + 'static,
     T::PostOp: Operation<S> + Send + 'static,
@@ -199,17 +203,14 @@ where
         let (insert_value, take, post_op) = self.pre_op_split(*downcasted_pre_op_output)?;
         Ok((Box::new(insert_value), Box::new(take), Box::new(post_op)))
     }
-    fn dyn_insert_names(&self) -> Box<dyn ManyBoxedExpressions<S> + Send> {
-        Box::new(self.insert_names())
-    }
-    fn dyn_insert_returning(&self) -> Box<dyn ManyBoxedExpressions<S> + Send> {
+    fn dyn_insert_returning(&self) -> Box<dyn DynIdentifierOnly<S> + Send> {
         Box::new(self.insert_returning())
     }
     fn dyn_insert_value(
         &self,
         from_data: Box<dyn Any + Send>,
         pre_op_output: Box<dyn Any + Send>,
-    ) -> Box<dyn ManyBoxedExpressions<S> + Send> {
+    ) -> Box<dyn DynSelfPrescribedInsert<S> + Send> {
         let downcasted_from_data = from_data.downcast::<T::InsertValuesData>().unwrap();
         let downcasted_pre_op_output = pre_op_output.downcast::<T::PreOpToInsertValue>().unwrap();
         Box::new(self.insert_value(*downcasted_from_data, *downcasted_pre_op_output))
@@ -285,7 +286,7 @@ where
             Self::PreOpToTake,
             Self::PreOpToPostOp,
         ),
-        crate::operations::insert_one::ConstraintViolation,
+        crate::operations::insert::ConstraintViolation,
     > {
         self.dyn_pre_op_split(pre_op_output)
     }
@@ -296,13 +297,7 @@ where
 
     type PreOpToPostOp = Box<dyn Any + Send>;
 
-    type InsertNames = Box<dyn ManyBoxedExpressions<S> + Send>;
-
-    fn insert_names(&self) -> Self::InsertNames {
-        self.dyn_insert_names()
-    }
-
-    type InsertReturning = Box<dyn ManyBoxedExpressions<S> + Send>;
+    type InsertReturning = Box<dyn DynIdentifierOnly<S> + Send>;
 
     fn insert_returning(&self) -> Self::InsertReturning {
         self.dyn_insert_returning()
@@ -310,13 +305,13 @@ where
 
     type InsertValuesData = Box<dyn Any + Send>;
 
-    type InsertValues = Box<dyn ManyBoxedExpressions<S> + Send>;
+    type InsertSets = Box<dyn DynSelfPrescribedInsert<S> + Send>;
 
     fn insert_value(
         &self,
         from_data: Self::InsertValuesData,
         pre_op_output: Self::PreOpToInsertValue,
-    ) -> Self::InsertValues {
+    ) -> Self::InsertSets {
         self.dyn_insert_value(from_data, pre_op_output)
     }
 
@@ -335,7 +330,7 @@ where
     fn from_row_result(
         &self,
         from_data: Self::PostOpData,
-        from_row: <Self::FromRow as crate::prelude::from_row_alias::FromRowData>::RData,
+        from_row: <Self::FromRow as FromRowData>::RData,
         pre_op_to_post_op: Self::PreOpToPostOp,
     ) -> (Self::PostOp, Self::TakeInput) {
         self.dyn_from_row_result(from_data, from_row, pre_op_to_post_op)
@@ -346,7 +341,7 @@ where
     fn post_op_output(
         &self,
         poo: Box<dyn Any + Send>,
-    ) -> Result<Self::PostOpOutput, crate::operations::insert_one::ConstraintViolation> {
+    ) -> Result<Self::PostOpOutput, ConstraintViolation> {
         self.dyn_post_op_output(poo)
     }
 
@@ -447,20 +442,10 @@ where
 
     type PreOpToPostOp = Vec<Box<dyn Any + Send>>;
 
-    type InsertNames = ManyFlat<Vec<Box<dyn ManyBoxedExpressions<S> + Send>>>;
-
-    fn insert_names(&self) -> Self::InsertNames {
-        ManyFlat(
-            self.iter()
-                .map(|link| link.as_ref().dyn_insert_names())
-                .collect(),
-        )
-    }
-
-    type InsertReturning = ManyFlat<Vec<Box<dyn ManyBoxedExpressions<S> + Send>>>;
+    type InsertReturning = AggregatedInsertReturning<S>;
 
     fn insert_returning(&self) -> Self::InsertReturning {
-        ManyFlat(
+        AggregatedInsertReturning(
             self.iter()
                 .map(|link| link.as_ref().dyn_insert_returning())
                 .collect(),
@@ -469,14 +454,14 @@ where
 
     type InsertValuesData = Vec<Box<dyn Any + Send>>;
 
-    type InsertValues = ManyFlat<Vec<Box<dyn ManyBoxedExpressions<S> + Send>>>;
+    type InsertSets = AggregatedInsertSets<S>;
 
     fn insert_value(
         &self,
         from_data: Self::InsertValuesData,
         pre_op_output: Self::PreOpToInsertValue,
-    ) -> Self::InsertValues {
-        ManyFlat(
+    ) -> Self::InsertSets {
+        AggregatedInsertSets(
             self.iter()
                 .zip(from_data.into_iter().zip(pre_op_output))
                 .map(|(link, (from_data, pre_op))| {

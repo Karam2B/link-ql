@@ -11,7 +11,7 @@ use crate::{
     json_client::dynamic_collection::DynamicCollection,
     links::{
         DefaultRelationKey,
-        relation_optional_to_many::OptionalToMany,
+        relation_one_to_many::OneToMany,
         timestamp::{DatedSet, TimestampOutput, impl_fetch_many::TimestampSelectItems},
         update_links::SetId,
     },
@@ -19,12 +19,12 @@ use crate::{
         OperationOutput,
         insert::{ConstraintViolation, InsertLinkConsumeData, InsertLinkData, InsertOneLink},
     },
-    sqlx_query_builder::functional_expr::ManyFlat,
+    sqlx_query_builder::Join,
 };
 
 type DynCollection = Arc<DynamicCollection<Sqlite>>;
-type DynOptionalToMany = OptionalToMany<DefaultRelationKey, DynCollection, DynCollection>;
-type DynSetCategoryLink = SetId<DynOptionalToMany, PhantomData<i64>>;
+type DynOneToMany = OneToMany<DefaultRelationKey, DynCollection, DynCollection>;
+type DynSetCategoryLink = SetId<DynOneToMany, PhantomData<i64>>;
 type DynTimestampLink = DatedSet<DynCollection>;
 
 /// `Vec<Box<dyn InsertLinkConsumeErased>>` — category [`SetId`] + timestamp [`DatedSet`] on base.
@@ -51,7 +51,7 @@ pub struct InsertLinksPair {
     timestamp: DynTimestampLink,
 }
 
-impl InsertLinkConsumeErased for SetId<DynOptionalToMany, i64> {
+impl InsertLinkConsumeErased for SetId<DynOneToMany, i64> {
     fn into_dyn_consumed(self: Box<Self>) -> DynConsumedInsertLink {
         let (link, data) = InsertLinkConsumeData::consume_data(*self);
         DynConsumedInsertLink::SetCategory {
@@ -233,42 +233,42 @@ impl InsertOneLink for InsertLinksPair {
     type PreOpToTake = ();
     type PreOpToPostOp = ();
 
-    type InsertNames = ManyFlat<(
+    type InsertNames = (
         <DynSetCategoryLink as InsertOneLink>::InsertNames,
         <DynTimestampLink as InsertOneLink>::InsertNames,
-    )>;
+    );
     fn insert_names(&self) -> Self::InsertNames {
-        ManyFlat((
+        (
             self.set_category.insert_names(),
             self.timestamp.insert_names(),
-        ))
+        )
     }
 
-    type InsertReturning = ManyFlat<(
+    type InsertReturning = (
         <DynSetCategoryLink as InsertOneLink>::InsertReturning,
         <DynTimestampLink as InsertOneLink>::InsertReturning,
-    )>;
+    );
     fn insert_returning(&self) -> Self::InsertReturning {
-        ManyFlat((
+        (
             self.set_category.insert_returning(),
             self.timestamp.insert_returning(),
-        ))
+        )
     }
 
     type InsertValuesData = ();
-    type InsertValues = ManyFlat<(
+    type InsertValues = (
         <DynSetCategoryLink as InsertOneLink>::InsertValues,
         <DynTimestampLink as InsertOneLink>::InsertValues,
-    )>;
+    );
     fn insert_value(
         &self,
         _: Self::InsertValuesData,
         _: Self::PreOpToInsertValue,
     ) -> Self::InsertValues {
-        ManyFlat((
+        (
             self.set_category.insert_value(self.category_id, ()),
             self.timestamp.insert_value((), ()),
-        ))
+        )
     }
 
     type FromRow = PairFromRow;
@@ -346,42 +346,29 @@ impl<'r> FromRowAlias<'r, <Sqlite as sqlx::Database>::Row> for PairFromRow {
         })
     }
 
-    fn pre_alias(
+    fn str_alias(
         &self,
-        row: crate::from_row::RowPreAliased<'r, <Sqlite as sqlx::Database>::Row>,
+        row: crate::from_row::RowStrAliased<'r, <Sqlite as sqlx::Database>::Row>,
     ) -> Result<Self::RData, crate::from_row::FromRowError>
     where
         <Sqlite as sqlx::Database>::Row: sqlx::Row,
     {
         Ok(PairFromRowData {
-            category_fk: self.set.pre_alias(row.clone())?,
-            timestamp: self.timestamp.pre_alias(row)?,
+            category_fk: self.set.str_alias(row.clone())?,
+            timestamp: self.timestamp.str_alias(row)?,
         })
     }
 
-    fn post_alias(
+    fn num_alias(
         &self,
-        row: crate::from_row::RowPostAliased<'r, <Sqlite as sqlx::Database>::Row>,
+        row: crate::from_row::RowNumAliased<'r, <Sqlite as sqlx::Database>::Row>,
     ) -> Result<Self::RData, crate::from_row::FromRowError>
     where
         <Sqlite as sqlx::Database>::Row: sqlx::Row,
     {
         Ok(PairFromRowData {
-            category_fk: self.set.post_alias(row.clone())?,
-            timestamp: self.timestamp.post_alias(row)?,
-        })
-    }
-
-    fn two_alias(
-        &self,
-        row: crate::from_row::RowTwoAliased<'r, <Sqlite as sqlx::Database>::Row>,
-    ) -> Result<Self::RData, crate::from_row::FromRowError>
-    where
-        <Sqlite as sqlx::Database>::Row: sqlx::Row,
-    {
-        Ok(PairFromRowData {
-            category_fk: self.set.two_alias(row.clone())?,
-            timestamp: self.timestamp.two_alias(row)?,
+            category_fk: self.set.num_alias(row.clone())?,
+            timestamp: self.timestamp.num_alias(row)?,
         })
     }
 }

@@ -25,22 +25,25 @@ in unit tests, to to do full pretty_assertions::assert_eq between queries and wh
 
 */
 
+mod compat;
+mod select_items_trait_object;
 mod to_bind;
 
 pub use dynamic_collection::MigrateDynamicCollection;
 pub use to_bind::ToBind;
-pub type DynOptionalToMany<S> = crate::links::relation_optional_to_many::OptionalToMany<
+pub type DynOneToMany<S> = crate::links::relation_one_to_many::OneToMany<
     crate::links::DefaultRelationKey,
     std::sync::Arc<crate::json_client::dynamic_collection::DynamicCollection<S>>,
     std::sync::Arc<crate::json_client::dynamic_collection::DynamicCollection<S>>,
 >;
-pub type DynOptionalToManyInverse<S> =
-    crate::links::relation_optional_to_many_inverse::OptionalToManyInverse<
+pub type DynOneToManyInverse<S> =
+    crate::links::relation_one_to_many_inverse::OneToManyInverse<
         crate::links::DefaultRelationKey,
         std::sync::Arc<crate::json_client::dynamic_collection::DynamicCollection<S>>,
         std::sync::Arc<crate::json_client::dynamic_collection::DynamicCollection<S>>,
     >;
 pub type DynManyToMany<S> = crate::links::relation_many_to_many::ManyToMany<
+    false,
     crate::links::DefaultRelationKey,
     std::sync::Arc<crate::json_client::dynamic_collection::DynamicCollection<S>>,
     std::sync::Arc<crate::json_client::dynamic_collection::DynamicCollection<S>>,
@@ -50,6 +53,8 @@ pub type DynTimestamp<S> = crate::links::timestamp::Timestamp<
 >;
 
 pub mod client_interface;
+pub use sqlx_executor::SqlxExecutor;
+pub use string_client::StringClient;
 pub mod dynamic_collection;
 mod gen_serde_impls;
 mod op_add_collection;

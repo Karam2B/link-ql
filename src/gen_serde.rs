@@ -1221,7 +1221,7 @@ pub(crate) mod json_format_side {
                     if decoded.is_none() {
                         decoded = Some(s[content_start..i].to_string());
                     }
-                    let out = decoded.as_mut().expect("claw_ql_bug: set above");
+                    let out = decoded.as_mut().expect("linked_sql_bug: set above");
                     i += 1;
                     match b.get(i) {
                         Some(&ch) if ch == b'"' || ch == b'\\' => {

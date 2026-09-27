@@ -1,10 +1,10 @@
-pub trait OnMigrate {
-    type Statements;
-    fn statments(&self) -> Self::Statements;
-}
+// pub trait OnMigrate {
+//     type Statements;
+//     fn statments(&self) -> Self::Statements;
+// }
 
 // #[cfg(feature = "skip_without_comments")]
-#[claw_ql_macros::skip]
+#[linked_sql_macros::skip]
 pub mod dynamic_migrate {
     use std::pin::Pin;
 

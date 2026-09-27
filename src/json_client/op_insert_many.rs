@@ -11,7 +11,7 @@ use crate::{
         json_format_side::{JsonAsArcCursor, JsonFormat},
     },
     json_client::{
-        DynManyToMany, DynOptionalToMany,
+        DynManyToMany, DynOneToMany,
         client_interface::{InsertManyError, InsertManyInput, InsertManyOutput, InsertOneError},
         dynamic_collection::{CollectionToSerialize, DynamicCollection, DynamicInsertInput},
         op_insert_one::exec_insert_one,
@@ -19,7 +19,7 @@ use crate::{
         sqlx_executor::SqlxExecutorData,
     },
     links::update_links::{SetId, SetNew},
-    operations::insert_one::{InsertLinkConsumeData, InsertOneLink},
+    operations::insert::{InsertLinkConsumeData, InsertOneLink},
 };
 
 type DynCollection<S> = Arc<DynamicCollection<S>>;
@@ -34,7 +34,7 @@ where
     S: sqlx::Database + DatabaseExt + ExecutorTrait + Send + Sync + 'static,
     DynCollection<S>: for<'r> FromRowAlias<'r, S::Row, RData = CollectionToSerialize>,
     DynamicInsertInput<S>: for<'d> Deserialize<'d, JsonAsArcCursor, Handler = DynCollection<S>>,
-    SetId<DynOptionalToMany<S>, i64>: InsertLinkConsumeData<
+    SetId<DynOneToMany<S>, i64>: InsertLinkConsumeData<
         Link: JsonInsertOneLink<S>
                   + InsertOneLink<InsertValuesData: Send, PreOpData: Send, PostOpData: Send>,
     >,
@@ -42,7 +42,7 @@ where
         Link: JsonInsertOneLink<S>
                   + InsertOneLink<InsertValuesData: Send, PreOpData: Send, PostOpData: Send>,
     >,
-    SetNew<DynOptionalToMany<S>, DynamicInsertInput<S>>: InsertLinkConsumeData<
+    SetNew<DynOneToMany<S>, DynamicInsertInput<S>>: InsertLinkConsumeData<
         Link: JsonInsertOneLink<S>
                   + InsertOneLink<InsertValuesData: Send, PreOpData: Send, PostOpData: Send>,
     >,

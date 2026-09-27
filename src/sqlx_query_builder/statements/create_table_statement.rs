@@ -1,6 +1,6 @@
 use crate::{
     database_extention::DatabaseExt,
-    sqlx_query_builder::{Expression, ManyExpressions, OpExpression, StatementBuilder},
+    sqlx_query_builder::{Expression, Join, OpExpression, StatementBuilder},
 };
 
 pub struct CreateTable<Init, TableName, ColDefs> {
@@ -17,11 +17,12 @@ pub mod expressions {
         sqlx_query_builder::{Expression, OpExpression, StatementBuilder},
     };
 
-    pub struct create_table;
+    pub struct CreateTableInit;
 
-    impl OpExpression for create_table {}
+    impl OpExpression for CreateTableInit {
+    }
 
-    impl<'q, S> Expression<'q, S> for create_table {
+    impl<'q, S> Expression<'q, S> for CreateTableInit {
         fn expression(self, ctx: &mut StatementBuilder<'q, S>)
         where
             S: DatabaseExt,
@@ -30,11 +31,12 @@ pub mod expressions {
         }
     }
 
-    pub struct create_if_not_exist;
+    pub struct CreateTableInitIfNotExist;
 
-    impl OpExpression for create_if_not_exist {}
+    impl OpExpression for CreateTableInitIfNotExist {
+    }
 
-    impl<'q, S> Expression<'q, S> for create_if_not_exist {
+    impl<'q, S> Expression<'q, S> for CreateTableInitIfNotExist {
         fn expression(self, ctx: &mut StatementBuilder<'q, S>)
         where
             S: DatabaseExt,
@@ -44,13 +46,15 @@ pub mod expressions {
     }
 }
 
-impl<Header, Table, Columns> OpExpression for CreateTable<Header, Table, Columns> {}
+impl<Header, Table, Columns> OpExpression for CreateTable<Header, Table, Columns> {
+}
 
 impl<'q, S, Header, Table, Columns> Expression<'q, S> for CreateTable<Header, Table, Columns>
 where
-    Header: Expression<'q, S> + 'q,
-    Table: Expression<'q, S> + 'q,
-    Columns: ManyExpressions<'q, S> + 'q,
+    S: DatabaseExt,
+    Header: Expression<'q, S>,
+    Table: Expression<'q, S>,
+    Join<Columns>: Expression<'q, S>,
 {
     fn expression(self, ctx: &mut StatementBuilder<'q, S>)
     where
@@ -61,11 +65,48 @@ where
         self.init.expression(ctx);
         ctx.syntax(&" ");
         self.name.expression(ctx);
-        // ctx.sanitize(self.name);
         ctx.syntax(&" ");
         ctx.syntax(&open_b);
-        self.col_defs.expression(&"", &", ", ctx);
+        Join {
+            start: "",
+            separator: ", ",
+            items: self.col_defs,
+        }
+        .expression(ctx);
         ctx.syntax(&close_b);
+    }
+}
+
+pub struct ColumnDefinition<C>(pub C);
+
+impl<C> OpExpression for ColumnDefinition<C> {}
+
+impl<'q, S, C> Expression<'q, S> for ColumnDefinition<C>
+where
+    Join<C>: Expression<'q, S>,
+{
+    fn expression(self, ctx: &mut StatementBuilder<'q, S>)
+    where
+        S: DatabaseExt,
+    {
+        Join {
+            start: "",
+            separator: " ",
+            items: self.0,
+        }
+        .expression(ctx);
+    }
+}
+
+pub struct NotNull;
+impl OpExpression for NotNull {
+}
+impl<'a, S> Expression<'a, S> for NotNull {
+    fn expression(self, ctx: &mut crate::sqlx_query_builder::StatementBuilder<'a, S>)
+    where
+        S: DatabaseExt,
+    {
+        ctx.syntax("NOT NULL");
     }
 }
 
@@ -74,9 +115,7 @@ mod old_dynamic_statement {
     #![allow(unused)]
     use std::{marker::PhantomData, ops::Not};
 
-    use crate::{
-        Buildable, ColumPositionConstraint, Expression, ExpressionToFragment, QueryBuilder,
-    };
+    use crate::{Buildable, ColumPositionConstraint, ExpressionToFragment, QueryBuilder};
 
     #[derive(Debug)]
     pub struct CreateTableSt<S: StatementBuilder> {
@@ -116,7 +155,6 @@ mod old_dynamic_statement {
                 let mut clauses = Vec::new();
                 for (mut col, constrain) in self.columns {
                     let constrain = S::fragment_to_string(ctx, constrain);
-                    // constrain can be () which build back to ""
                     if constrain.is_empty().not() {
                         col.push_str(&format!(" {}", constrain))
                     }

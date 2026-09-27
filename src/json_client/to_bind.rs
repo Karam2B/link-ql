@@ -1,4 +1,4 @@
-use crate::expressions::is_null::IsNull as IsNullTrait;
+use crate::is_null::IsNull as IsNullTrait;
 use sqlx::Database;
 use sqlx::Encode;
 use sqlx::Type;
@@ -117,7 +117,8 @@ mod expression_impls {
     use crate::sqlx_query_builder::StatementBuilder;
     use sqlx::Database;
 
-    impl<S> OpExpression for Box<dyn ToBind<S> + Send> {}
+    impl<S> OpExpression for Box<dyn ToBind<S> + Send> {
+}
     impl<'q, S> Expression<'q, S> for Box<dyn ToBind<S> + Send>
     where
         S: Database + DatabaseExt,

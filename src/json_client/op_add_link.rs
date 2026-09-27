@@ -10,9 +10,9 @@ use crate::{
     },
     links::{
         DefaultRelationKey, relation_many_to_many::ManyToMany,
-        relation_optional_to_many::OptionalToMany, timestamp::Timestamp,
+        relation_one_to_many::OneToMany, timestamp::Timestamp,
     },
-    on_migrate::OnMigrate,
+    operations::operations_expressions_crossover::MigrateExpression,
     sqlx_query_builder::{Expression, StatementBuilder},
 };
 
@@ -22,18 +22,18 @@ pub fn add_link<S>(
 ) -> impl Future<Output = Result<AddLinkOutput, AddLinkError>> + 'static + Send + use<S>
 where
     S: DatabaseExt + Sync + Send + ExecutorTrait,
-    OptionalToMany<DefaultRelationKey, Arc<DynamicCollection<S>>, Arc<DynamicCollection<S>>>:
-        OnMigrate<Statements: for<'q> Expression<'q, S>>,
-    ManyToMany<DefaultRelationKey, Arc<DynamicCollection<S>>, Arc<DynamicCollection<S>>>:
-        OnMigrate<Statements: for<'q> Expression<'q, S>>,
-    Timestamp<Arc<DynamicCollection<S>>>: OnMigrate<Statements: for<'q> Expression<'q, S>>,
+    OneToMany<DefaultRelationKey, Arc<DynamicCollection<S>>, Arc<DynamicCollection<S>>>:
+        MigrateExpression<Migrate: for<'e> Expression<'e, S>>,
+    ManyToMany<false, DefaultRelationKey, Arc<DynamicCollection<S>>, Arc<DynamicCollection<S>>>:
+        MigrateExpression<Migrate: for<'e> Expression<'e, S>>,
+    Timestamp<Arc<DynamicCollection<S>>>: MigrateExpression<Migrate: for<'e> Expression<'e, S>>,
 {
     async move {
         match input {
-            AddLinkInput::OptionalToMany { from, to } => {
+            AddLinkInput::OneToMany { from, to } => {
                 {
                     let li_read = this.link_info.read().await;
-                    if li_read.optional_to_many.contains(&FromTo {
+                    if li_read.one_to_many.contains(&FromTo {
                         from: from.detach(),
                         to: to.detach(),
                     }) {
@@ -56,12 +56,14 @@ where
                     .clone();
                 drop(collections);
 
-                let mig =
-                    StatementBuilder::<S>::new_no_data(OnMigrate::statments(&OptionalToMany {
+                let mig = StatementBuilder::<S>::new_no_data(
+                    OneToMany {
                         fk_unique_id: DefaultRelationKey,
                         from: from_col,
                         to: to_col,
-                    }))
+                    }
+                    .migrate(),
+                )
                     .expect("bug: {}");
 
                 let mut conn = this.pool.acquire().await.unwrap();
@@ -70,7 +72,7 @@ where
                 let mut migration = this.migration.write().await;
                 let mut li_write = this.link_info.write().await;
                 migration.push(mig);
-                li_write.optional_to_many.insert(FromTo {
+                li_write.one_to_many.insert(FromTo {
                     from: from.detach(),
                     to: to.detach(),
                 });
@@ -103,11 +105,14 @@ where
                     .clone();
                 drop(collections);
 
-                let mig = StatementBuilder::<S>::new_no_data(OnMigrate::statments(&ManyToMany {
-                    relation_key: DefaultRelationKey,
-                    from: from_col,
-                    to: to_col,
-                }))
+                let mig = StatementBuilder::<S>::new_no_data(
+                    ManyToMany {
+                        relation_key: DefaultRelationKey,
+                        from: from_col,
+                        to: to_col,
+                    }
+                    .migrate(),
+                )
                 .expect("bug: many_to_many migration contains bind parameters");
 
                 let mut conn = this.pool.acquire().await.unwrap();
@@ -140,9 +145,12 @@ where
                     .clone();
                 drop(collections);
 
-                let mig = StatementBuilder::<S>::new_no_data(OnMigrate::statments(&Timestamp {
-                    collection: col,
-                }))
+                let mig = StatementBuilder::<S>::new_no_data(
+                    Timestamp {
+                        collection: col,
+                    }
+                    .migrate(),
+                )
                 .expect("bug: timestamp migration contains bind parameters");
 
                 let mut conn = this

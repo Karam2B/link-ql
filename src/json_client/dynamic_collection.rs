@@ -9,7 +9,9 @@ use crate::{
         ToBind,
         client_interface::{AddCollectionInput, SupportedType},
     },
-    sqlx_query_builder::{basic_expressions::TypeAsSyntax, trait_objects::BoxedExpression},
+    sqlx_query_builder::{
+        RefExpression, Sanitize, basic_expressions::TypeAsSyntax, trait_objects::BoxedExpression,
+    },
     sub_arc::ArcSubStr,
 };
 use convert_case::{Case, Casing};
@@ -25,7 +27,7 @@ pub struct DynamicCollection<S>
 where
     S: sqlx::Database + DatabaseExt,
 {
-    pub(crate) collection_name: CollectionName,
+    pub collection_name: CollectionName,
     pub(crate) fields: Vec<DynamicField<S>>,
 }
 
@@ -34,15 +36,15 @@ pub(crate) struct DynamicField<S>
 where
     S: sqlx::Database + DatabaseExt,
 {
-    pub(crate) name: FieldName,
-    pub(crate) type_info: VTable<S>,
-    pub(crate) is_optional: bool,
+    pub name: FieldName,
+    pub type_info: VTable<S>,
+    pub is_optional: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct CollectionName {
-    pub(crate) pascal_case: Arc<str>,
-    pub(crate) snake_case: Arc<str>,
+    pub pascal_case: Arc<str>,
+    pub snake_case: Arc<str>,
 }
 
 impl CollectionName {
@@ -73,7 +75,7 @@ impl Eq for CollectionName {}
 
 #[derive(Debug, Clone)]
 pub struct FieldName {
-    pub(crate) snake_case: Arc<str>,
+    pub snake_case: Arc<str>,
 }
 
 impl FieldName {
@@ -166,7 +168,7 @@ vtable! {
         [ for<'a> &'a str: ColumnIndex<S::Row> ],
         [ S: DatabaseExt + sqlx::Database ],
         [ T: for<'q> Decode<'q, S> + for<'q> Encode<'q, S> + Type<S> + Clone ],
-        [ T: crate::expressions::is_null::IsNull ],
+        [ T: crate::is_null::IsNull ],
         [ T: Serialize<JsonAsString> ],
         [
             T: for<'de> Deserialize<'de, JsonAsArcCursor, Handler = ()>
@@ -228,7 +230,7 @@ where
 
 impl<S> Eq for VTable<S> where S: DatabaseExt {}
 
-fn vtable_for_type<S>(ty: &SupportedType) -> Result<VTable<S>, ()>
+pub fn vtable_for_suppored_type<S>(ty: &SupportedType) -> Result<VTable<S>, ()>
 where
     S: sqlx::Database + DatabaseExt,
     String: for<'q> sqlx::Encode<'q, S> + sqlx::Type<S> + for<'d> sqlx::Decode<'d, S>,
@@ -289,7 +291,7 @@ where
             .map(|f| {
                 Ok(DynamicField {
                     name: FieldName::new(&f.name)?,
-                    type_info: vtable_for_type(&f.type_info)?,
+                    type_info: vtable_for_suppored_type(&f.type_info)?,
                     is_optional: f.is_optional,
                 })
             })
@@ -698,9 +700,6 @@ pub(crate) mod common_expression_impls {
 
     use crate::{
         database_extention::DatabaseExt,
-        extentions::common_expressions::{
-            Aliased, Identifier, OnInsert, TableNameExpression, V0OnUpdate,
-        },
         from_row::{FromRowAlias, FromRowData, FromRowError, from_row_v2::RowAliased},
         json_client::{
             ToBind,
@@ -709,7 +708,11 @@ pub(crate) mod common_expression_impls {
                 DynamicUpdateInput,
             },
         },
-        sqlx_query_builder::{Expression, IsOpExpression, ManyExpressions, StatementBuilder},
+        operations::operations_expressions_crossover::{
+            ExpressionsForOperation, OnInsert, OnUpdate, TableExpressions,
+        },
+        sqlx_query_builder::{Expression, OpExpression, StatementBuilder},
+        sqlx_query_builder::{RefExpression, Sanitize},
         sub_arc::ArcSubStr,
     };
     use sqlx::{ColumnIndex, Database, Row};
@@ -718,37 +721,33 @@ pub(crate) mod common_expression_impls {
         pub vec: Vec<Box<dyn ToBind<S> + Send>>,
     }
 
-    impl<S> IsOpExpression for ToBindSetMany<S> {
-        fn is_op(&self) -> bool {
-            self.vec.is_empty().not()
-        }
+    impl<S> OpExpression for ToBindSetMany<S> {
     }
 
-    impl<'q, S> ManyExpressions<'q, S> for ToBindSetMany<S>
+    impl<'q, S> Expression<'q, S> for ToBindSetMany<S>
     where
         S: DatabaseExt,
     {
-        fn expression(
-            mut self,
-            start: &'static str,
-            join: &'static str,
-            ctx: &mut StatementBuilder<'q, S>,
-        ) where
-            S: DatabaseExt,
-        {
+        fn expression(mut self, ctx: &mut StatementBuilder<'q, S>) {
             if self.vec.is_empty() {
                 return;
             }
 
-            ctx.syntax(start);
             let last = self.vec.pop();
+            let mut first = true;
 
             for each in self.vec {
+                if !first {
+                    ctx.syntax(", ");
+                }
+                first = false;
                 ctx.bind(each);
-                ctx.syntax(join);
             }
 
             if let Some(value) = last {
+                if !first {
+                    ctx.syntax(", ");
+                }
                 ctx.bind(value);
             }
         }
@@ -758,59 +757,64 @@ pub(crate) mod common_expression_impls {
         pub cols: Vec<Arc<str>>,
     }
 
-    impl IsOpExpression for StoredMemberNames {
-        fn is_op(&self) -> bool {
-            self.cols.is_empty().not()
+    impl crate::operations::operations_expressions_crossover::IdentifierColNames for StoredMemberNames {
+        fn col_names(self) -> Vec<String> {
+            self.cols.into_iter().map(|col| col.to_string()).collect()
         }
     }
 
-    impl<'q, S> ManyExpressions<'q, S> for StoredMemberNames
+    impl OpExpression for StoredMemberNames {
+    }
+
+    impl<'q, S> Expression<'q, S> for StoredMemberNames
     where
         S: DatabaseExt,
     {
-        fn expression(
-            mut self,
-            start: &'static str,
-            join: &'static str,
-            ctx: &mut StatementBuilder<'q, S>,
-        ) where
-            S: DatabaseExt,
-        {
+        fn expression(mut self, ctx: &mut StatementBuilder<'q, S>) {
             if self.cols.is_empty() {
                 return;
             }
 
-            ctx.syntax(start);
             let last = self.cols.pop();
+            let mut first = true;
 
             for col in self.cols {
-                Expression::expression(col, ctx);
-                ctx.syntax(join);
+                if !first {
+                    ctx.syntax(", ");
+                }
+                first = false;
+                col.expression(ctx);
             }
 
             if let Some(col) = last {
-                Expression::expression(col, ctx);
+                if !first {
+                    ctx.syntax(", ");
+                }
+                col.expression(ctx);
             }
         }
     }
 
-    impl<S> TableNameExpression for DynamicCollection<S>
+    impl<S> TableExpressions for DynamicCollection<S>
     where
         S: sqlx::Database + DatabaseExt,
     {
-        type TableNameExpression = Arc<str>;
-        type LowerCaseTableNameExpression = Arc<str>;
+        type SnakeCase = Arc<str>;
+        type PascalCase = Arc<str>;
 
-        fn table_name_expression(&self) -> Self::TableNameExpression {
+        fn table_name_snake_case(&self) -> Self::SnakeCase {
+            Arc::clone(&self.collection_name.snake_case)
+        }
+
+        fn table_name_pascal_case(&self) -> Self::PascalCase {
             Arc::clone(&self.collection_name.pascal_case)
         }
 
-        fn lower_case_table_name_expression(&self) -> Self::LowerCaseTableNameExpression {
-            Arc::clone(&self.collection_name.snake_case)
-        }
+        type InheritJoin = ();
+        fn inherit_join(&self) -> Self::InheritJoin {}
     }
 
-    impl<S> Identifier for DynamicCollection<S>
+    impl<S> ExpressionsForOperation for DynamicCollection<S>
     where
         S: sqlx::Database + DatabaseExt,
     {
@@ -825,28 +829,98 @@ pub(crate) mod common_expression_impls {
                     .collect(),
             }
         }
-    }
 
-    impl<S> crate::extentions::Members for DynamicCollection<S>
-    where
-        S: sqlx::Database + DatabaseExt,
-    {
-        fn members_names(&self) -> Vec<String> {
-            self.fields
-                .iter()
-                .map(|field| field.name.snake_case.to_string())
-                .collect()
+        type Scoped = DynamicScopedMembers;
+
+        fn scoped(&self) -> Self::Scoped {
+            DynamicScopedMembers {
+                table: Arc::clone(&self.collection_name.pascal_case),
+                cols: self
+                    .fields
+                    .iter()
+                    .map(|field| Arc::clone(&field.name.snake_case))
+                    .collect(),
+            }
+        }
+
+        type ScopedAliased = DynamicAliasedMembers;
+        type NumScopedAliased = DynamicAliasedMembers;
+
+        fn scoped_aliased(&self, alias: &'static str) -> Self::ScopedAliased {
+            DynamicAliasedMembers {
+                table: Arc::clone(&self.collection_name.pascal_case),
+                cols: self
+                    .fields
+                    .iter()
+                    .map(|field| Arc::clone(&field.name.snake_case))
+                    .collect(),
+                alias,
+                num: None,
+            }
+        }
+
+        fn num_scoped_aliased(&self, num: usize, alias: &'static str) -> Self::NumScopedAliased {
+            DynamicAliasedMembers {
+                table: Arc::clone(&self.collection_name.pascal_case),
+                cols: self
+                    .fields
+                    .iter()
+                    .map(|field| Arc::clone(&field.name.snake_case))
+                    .collect(),
+                alias,
+                num: Some(num),
+            }
         }
     }
 
-    impl<S> OnInsert for DynamicCollection<S>
+    pub struct DynamicScopedMembers {
+        pub table: Arc<str>,
+        pub cols: Vec<Arc<str>>,
+    }
+
+    impl OpExpression for DynamicScopedMembers {
+    }
+
+    impl<'q, S> Expression<'q, S> for DynamicScopedMembers
+    where
+        S: DatabaseExt,
+    {
+        fn expression(mut self, ctx: &mut StatementBuilder<'q, S>) {
+            if self.cols.is_empty() {
+                return;
+            }
+
+            let last = self.cols.pop();
+            let mut first = true;
+
+            for col in &self.cols {
+                if !first {
+                    ctx.syntax(", ");
+                }
+                first = false;
+                ctx.sanitize(self.table.as_ref());
+                ctx.syntax(".");
+                ctx.sanitize(col.as_ref());
+            }
+
+            if let Some(col) = last {
+                if !first {
+                    ctx.syntax(", ");
+                }
+                ctx.sanitize(self.table.as_ref());
+                ctx.syntax(".");
+                ctx.sanitize(col.as_ref());
+            }
+        }
+    }
+
+    impl<S> OnInsert<DynamicInsertInput<S>> for DynamicCollection<S>
     where
         S: sqlx::Database + DatabaseExt,
     {
-        type InsertInput = DynamicInsertInput<S>;
         type InsertExpression = ToBindSetMany<S>;
 
-        fn on_insert(&self, input: Self::InsertInput) -> Self::InsertExpression {
+        fn on_insert(&self, input: DynamicInsertInput<S>) -> Self::InsertExpression {
             let mut vec = Vec::with_capacity(self.fields.len());
             for field in &self.fields {
                 let bind = input
@@ -857,6 +931,15 @@ pub(crate) mod common_expression_impls {
                 vec.push(bind);
             }
             ToBindSetMany { vec }
+        }
+
+        type InsertId = ();
+
+        fn on_insert_with_id(
+            &self,
+            input: DynamicInsertInput<S>,
+        ) -> (Self::InsertId, Self::InsertExpression) {
+            ((), self.on_insert(input))
         }
     }
 
@@ -885,9 +968,9 @@ pub(crate) mod common_expression_impls {
             Ok(map)
         }
 
-        fn pre_alias(
+        fn str_alias(
             &self,
-            row: crate::from_row::RowPreAliased<'r, S::Row>,
+            row: crate::from_row::RowStrAliased<'r, S::Row>,
         ) -> Result<Self::RData, FromRowError>
         where
             S::Row: Row,
@@ -906,19 +989,9 @@ pub(crate) mod common_expression_impls {
             Ok(map)
         }
 
-        fn post_alias(
+        fn num_alias(
             &self,
-            row: crate::from_row::RowPostAliased<'r, S::Row>,
-        ) -> Result<Self::RData, FromRowError>
-        where
-            S::Row: Row,
-        {
-            self.no_alias(row.get_sqlx_row())
-        }
-
-        fn two_alias(
-            &self,
-            row: crate::from_row::RowTwoAliased<'r, S::Row>,
+            row: crate::from_row::RowNumAliased<'r, S::Row>,
         ) -> Result<Self::RData, FromRowError>
         where
             S::Row: Row,
@@ -943,6 +1016,13 @@ pub(crate) mod common_expression_impls {
         }
     }
 
+    fn aliased_column_name(alias: &str, num: Option<usize>, col: &str) -> String {
+        match num {
+            None => format!("{alias}{col}"),
+            Some(num) => format!("{alias}{num}{col}"),
+        }
+    }
+
     pub struct DynamicAliasedMembers {
         pub table: Arc<str>,
         pub cols: Vec<Arc<str>>,
@@ -950,86 +1030,59 @@ pub(crate) mod common_expression_impls {
         pub num: Option<usize>,
     }
 
-    impl IsOpExpression for DynamicAliasedMembers {
-        fn is_op(&self) -> bool {
-            self.cols.is_empty().not()
-        }
+    impl OpExpression for DynamicAliasedMembers {
     }
 
-    impl<'q, S> ManyExpressions<'q, S> for DynamicAliasedMembers
+    impl<'q, S> Expression<'q, S> for DynamicAliasedMembers
     where
         S: DatabaseExt,
     {
-        fn expression(
-            mut self,
-            start: &'static str,
-            join: &'static str,
-            ctx: &mut StatementBuilder<'q, S>,
-        ) where
-            S: DatabaseExt,
-        {
+        fn expression(mut self, ctx: &mut StatementBuilder<'q, S>) {
             if self.cols.is_empty() {
                 return;
             }
 
-            ctx.syntax(start);
             let last = self.cols.pop();
+            let mut first = true;
 
             for col in &self.cols {
+                if !first {
+                    ctx.syntax(", ");
+                }
+                first = false;
                 ctx.sanitize(self.table.as_ref());
                 ctx.syntax(".");
                 ctx.sanitize(col.as_ref());
                 ctx.syntax(" AS ");
-                match self.num {
-                    None => ctx.sanitize_many((self.alias, col.as_ref())),
-                    Some(num) => ctx.sanitize_many((self.alias, num, col.as_ref())),
-                }
-                ctx.syntax(join);
+                ctx.sanitize(&aliased_column_name(self.alias, self.num, col));
             }
 
             if let Some(col) = last {
+                if !first {
+                    ctx.syntax(", ");
+                }
                 ctx.sanitize(self.table.as_ref());
                 ctx.syntax(".");
                 ctx.sanitize(col.as_ref());
                 ctx.syntax(" AS ");
-                match self.num {
-                    None => ctx.sanitize_many((self.alias, col.as_ref())),
-                    Some(num) => ctx.sanitize_many((self.alias, num, col.as_ref())),
-                }
+                ctx.sanitize(&aliased_column_name(self.alias, self.num, &col));
             }
         }
     }
 
-    impl<S> Aliased for DynamicCollection<S>
+    impl<S> OnUpdate<DynamicUpdateInput<S>> for DynamicCollection<S>
     where
         S: sqlx::Database + DatabaseExt,
     {
-        type Aliased = DynamicAliasedMembers;
-        type NumAliased = DynamicAliasedMembers;
+        type UpdateExpression = DynamicUpdateSet<S>;
 
-        fn aliased(&self, alias: &'static str) -> Self::Aliased {
-            DynamicAliasedMembers {
-                table: Arc::clone(&self.collection_name.pascal_case),
-                cols: self
-                    .fields
-                    .iter()
-                    .map(|field| Arc::clone(&field.name.snake_case))
+        fn on_update(&self, input: DynamicUpdateInput<S>) -> Self::UpdateExpression {
+            DynamicUpdateSet {
+                sets: input
+                    .0
+                    .into_iter()
+                    .map(|(key, value)| (ArcSubStr::detach(&key), value))
                     .collect(),
-                alias,
-                num: None,
-            }
-        }
-
-        fn num_aliased(&self, num: usize, alias: &'static str) -> Self::NumAliased {
-            DynamicAliasedMembers {
-                table: Arc::clone(&self.collection_name.pascal_case),
-                cols: self
-                    .fields
-                    .iter()
-                    .map(|field| Arc::clone(&field.name.snake_case))
-                    .collect(),
-                alias,
-                num: Some(num),
             }
         }
     }
@@ -1038,60 +1091,41 @@ pub(crate) mod common_expression_impls {
         pub sets: Vec<(Arc<str>, Box<dyn ToBind<S> + Send>)>,
     }
 
-    impl<S> IsOpExpression for DynamicUpdateSet<S> {
-        fn is_op(&self) -> bool {
-            self.sets.is_empty().not()
+    impl<S> OpExpression for DynamicUpdateSet<S> {
+        fn is_expression_present(&self) -> bool {
+            !self.sets.is_empty()
         }
     }
 
-    impl<'q, S> ManyExpressions<'q, S> for DynamicUpdateSet<S>
+    impl<'q, S> Expression<'q, S> for DynamicUpdateSet<S>
     where
         S: DatabaseExt,
     {
-        fn expression(
-            mut self,
-            start: &'static str,
-            join: &'static str,
-            ctx: &mut StatementBuilder<'q, S>,
-        ) where
-            S: DatabaseExt,
-        {
+        fn expression(mut self, ctx: &mut StatementBuilder<'q, S>) {
             if self.sets.is_empty() {
                 return;
             }
 
-            ctx.syntax(start);
             let last = self.sets.pop();
+            let mut first = true;
 
             for (name, bind) in self.sets {
+                if !first {
+                    ctx.syntax(", ");
+                }
+                first = false;
                 ctx.sanitize(name.as_ref());
                 ctx.syntax(" = ");
                 ctx.bind(bind);
-                ctx.syntax(join);
             }
 
             if let Some((name, bind)) = last {
+                if !first {
+                    ctx.syntax(", ");
+                }
                 ctx.sanitize(name.as_ref());
                 ctx.syntax(" = ");
                 ctx.bind(bind);
-            }
-        }
-    }
-
-    impl<S> crate::extentions::common_expressions::V0OnUpdate for DynamicCollection<S>
-    where
-        S: sqlx::Database + DatabaseExt,
-    {
-        type UpdateInput = DynamicUpdateInput<S>;
-        type UpdateExpression = DynamicUpdateSet<S>;
-
-        fn on_update(self, input: Self::UpdateInput) -> Self::UpdateExpression {
-            DynamicUpdateSet {
-                sets: input
-                    .0
-                    .into_iter()
-                    .map(|(key, value)| (ArcSubStr::detach(&key), value))
-                    .collect(),
             }
         }
     }
@@ -1102,98 +1136,90 @@ mod arc_collection_impls {
 
     use crate::{
         database_extention::DatabaseExt,
-        extentions::common_expressions::{
-            Aliased, Identifier, OnInsert, TableNameExpression, V0OnUpdate,
-        },
         from_row::{FromRowAlias, FromRowData, FromRowError},
         json_client::dynamic_collection::{
             CollectionToSerialize, DynamicCollection, DynamicInsertInput, DynamicUpdateInput,
             common_expression_impls::{DynamicUpdateSet, ToBindSetMany},
         },
+        operations::operations_expressions_crossover::{
+            ExpressionsForOperation, OnInsert, OnUpdate, TableExpressions,
+        },
         sub_arc::ArcSubStr,
     };
     use sqlx::{ColumnIndex, Database, Row};
 
-    impl<S> TableNameExpression for Arc<DynamicCollection<S>>
+    impl<S> TableExpressions for Arc<DynamicCollection<S>>
     where
         S: sqlx::Database + DatabaseExt,
     {
-        type TableNameExpression = Arc<str>;
-        type LowerCaseTableNameExpression = Arc<str>;
+        type SnakeCase = Arc<str>;
+        type PascalCase = Arc<str>;
 
-        fn table_name_expression(&self) -> Self::TableNameExpression {
-            TableNameExpression::table_name_expression(self.as_ref())
+        fn table_name_snake_case(&self) -> Self::SnakeCase {
+            TableExpressions::table_name_snake_case(self.as_ref())
         }
 
-        fn lower_case_table_name_expression(&self) -> Self::LowerCaseTableNameExpression {
-            TableNameExpression::lower_case_table_name_expression(self.as_ref())
+        fn table_name_pascal_case(&self) -> Self::PascalCase {
+            TableExpressions::table_name_pascal_case(self.as_ref())
         }
+
+        type InheritJoin = ();
+        fn inherit_join(&self) -> Self::InheritJoin {}
     }
 
-    impl<S> Identifier for Arc<DynamicCollection<S>>
+    impl<S> ExpressionsForOperation for Arc<DynamicCollection<S>>
     where
         S: sqlx::Database + DatabaseExt,
     {
         type Identifier = super::common_expression_impls::StoredMemberNames;
+        type Scoped = super::common_expression_impls::DynamicScopedMembers;
+        type ScopedAliased = super::common_expression_impls::DynamicAliasedMembers;
+        type NumScopedAliased = super::common_expression_impls::DynamicAliasedMembers;
 
         fn identifier(&self) -> Self::Identifier {
-            Identifier::identifier(self.as_ref())
+            ExpressionsForOperation::identifier(self.as_ref())
+        }
+
+        fn scoped(&self) -> Self::Scoped {
+            ExpressionsForOperation::scoped(self.as_ref())
+        }
+
+        fn scoped_aliased(&self, alias: &'static str) -> Self::ScopedAliased {
+            ExpressionsForOperation::scoped_aliased(self.as_ref(), alias)
+        }
+
+        fn num_scoped_aliased(&self, num: usize, alias: &'static str) -> Self::NumScopedAliased {
+            ExpressionsForOperation::num_scoped_aliased(self.as_ref(), num, alias)
         }
     }
 
-    impl<S> crate::extentions::Members for Arc<DynamicCollection<S>>
+    impl<S> OnInsert<DynamicInsertInput<S>> for Arc<DynamicCollection<S>>
     where
         S: sqlx::Database + DatabaseExt,
     {
-        fn members_names(&self) -> Vec<String> {
-            crate::extentions::Members::members_names(self.as_ref())
-        }
-    }
-
-    impl<S> OnInsert for Arc<DynamicCollection<S>>
-    where
-        S: sqlx::Database + DatabaseExt,
-    {
-        type InsertInput = DynamicInsertInput<S>;
         type InsertExpression = ToBindSetMany<S>;
+        type InsertId = ();
 
-        fn on_insert(&self, input: Self::InsertInput) -> Self::InsertExpression {
+        fn on_insert(&self, input: DynamicInsertInput<S>) -> Self::InsertExpression {
             OnInsert::on_insert(self.as_ref(), input)
         }
-    }
 
-    impl<S> Aliased for Arc<DynamicCollection<S>>
-    where
-        S: sqlx::Database + DatabaseExt,
-    {
-        type Aliased = super::common_expression_impls::DynamicAliasedMembers;
-        type NumAliased = super::common_expression_impls::DynamicAliasedMembers;
-
-        fn aliased(&self, alias: &'static str) -> Self::Aliased {
-            Aliased::aliased(self.as_ref(), alias)
-        }
-
-        fn num_aliased(&self, num: usize, alias: &'static str) -> Self::NumAliased {
-            Aliased::num_aliased(self.as_ref(), num, alias)
+        fn on_insert_with_id(
+            &self,
+            input: DynamicInsertInput<S>,
+        ) -> (Self::InsertId, Self::InsertExpression) {
+            OnInsert::on_insert_with_id(self.as_ref(), input)
         }
     }
 
-    impl<S> V0OnUpdate for Arc<DynamicCollection<S>>
+    impl<S> OnUpdate<DynamicUpdateInput<S>> for Arc<DynamicCollection<S>>
     where
         S: sqlx::Database + DatabaseExt,
-        DynamicCollection<S>: V0OnUpdate,
     {
-        type UpdateInput = DynamicUpdateInput<S>;
         type UpdateExpression = DynamicUpdateSet<S>;
 
-        fn on_update(self, input: Self::UpdateInput) -> Self::UpdateExpression {
-            DynamicUpdateSet {
-                sets: input
-                    .0
-                    .into_iter()
-                    .map(|(key, value)| (ArcSubStr::detach(&key), value))
-                    .collect(),
-            }
+        fn on_update(&self, input: DynamicUpdateInput<S>) -> Self::UpdateExpression {
+            OnUpdate::on_update(self.as_ref(), input)
         }
     }
 
@@ -1214,34 +1240,24 @@ mod arc_collection_impls {
             self.as_ref().no_alias(row)
         }
 
-        fn pre_alias(
+        fn str_alias(
             &self,
-            row: crate::from_row::RowPreAliased<'r, S::Row>,
+            row: crate::from_row::RowStrAliased<'r, S::Row>,
         ) -> Result<Self::RData, FromRowError>
         where
             S::Row: Row,
         {
-            self.as_ref().pre_alias(row)
+            self.as_ref().str_alias(row)
         }
 
-        fn post_alias(
+        fn num_alias(
             &self,
-            row: crate::from_row::RowPostAliased<'r, S::Row>,
+            row: crate::from_row::RowNumAliased<'r, S::Row>,
         ) -> Result<Self::RData, FromRowError>
         where
             S::Row: Row,
         {
-            self.as_ref().post_alias(row)
-        }
-
-        fn two_alias(
-            &self,
-            row: crate::from_row::RowTwoAliased<'r, S::Row>,
-        ) -> Result<Self::RData, FromRowError>
-        where
-            S::Row: Row,
-        {
-            self.as_ref().two_alias(row)
+            self.as_ref().num_alias(row)
         }
     }
 }
@@ -1288,7 +1304,7 @@ mod impl_on_migrate {
     use crate::{
         database_extention::DatabaseExt,
         json_client::dynamic_collection::DynamicField,
-        on_migrate::OnMigrate,
+        operations::operations_expressions_crossover::MigrateExpression,
         sqlx_query_builder::{Expression, OpExpression, StatementBuilder},
     };
     use sqlx::ColumnIndex;
@@ -1298,16 +1314,16 @@ mod impl_on_migrate {
         fields: Vec<DynamicField<S>>,
     }
 
-    impl<S> OnMigrate for DynamicCollection<S>
+    impl<S> MigrateExpression for DynamicCollection<S>
     where
         S: DatabaseExt,
         for<'a> &'a str: ColumnIndex<S::Row>,
         bool: sqlx::Type<S>,
         std::string::String: sqlx::Type<S>,
     {
-        type Statements = MigrateDynamicCollection<S>;
+        type Migrate = MigrateDynamicCollection<S>;
 
-        fn statments(&self) -> Self::Statements {
+        fn migrate(&self) -> Self::Migrate {
             MigrateDynamicCollection {
                 upper_case_name: Arc::clone(&self.collection_name.pascal_case),
                 fields: self.fields.clone(),
@@ -1315,7 +1331,8 @@ mod impl_on_migrate {
         }
     }
 
-    impl<S: DatabaseExt> OpExpression for MigrateDynamicCollection<S> {}
+    impl<S: DatabaseExt> OpExpression for MigrateDynamicCollection<S> {
+    }
 
     impl<'q, S> Expression<'q, S> for MigrateDynamicCollection<S>
     where

@@ -1,141 +1,229 @@
-# ClawQl
+# LinkedSql
 
-Robust and flexable Rust ORM.
+Robust, zero-cost and flexable ORM. Written in idomatic Rust .
+
+**Main Example**
+
 
 ```Rust
-#[derive(Collection, OnMigrate, FromRowAlias)]
-pub struct Todo {
-    pub title: String,
-    pub done: bool,
-    pub description: Option<String>,
-}
+    client.exec(r#"
+        {
+            "op": "add_collection",
+            "body": {
+                "name": "todo",
+                "fields": [
+                    { 
+                        "name": "title", 
+                        "type_info": "String", 
+                        "is_optional": false 
+                    },
+                    { 
+                        "name": "description", 
+                        "type_info": "String", 
+                        "is_optional": true 
+                    },
+                    { 
+                        "name": "done", 
+                        "type_info": "Boolean", 
+                        "is_optional": false 
+                    }
+                ]
+            }
+        }
+    "#).await;
 
-#[derive(Collection, OnMigrate, FromRowAlias)]
-pub struct Category {
-    pub title: String,
-}
+    client.exec(r#"
+        {
+            "op": "add_collection",
+            "body": {
+                "name": "category",
+                "fields": [
+                    { "name": "title", "type_info": "String", "is_optional": false }
+                ]
+            }
+        }
+    "#).await;
 
-impl Link<todo> for category {
-    type Spec = optional_to_many<String, todo, category>;
-    fn spec(self, _: &todo) -> Self::Spec {
-        optional_to_many {
-            foriegn_key: String::from("category_id"),
-            from: todo,
-            to: self,
+    client.exec(r#"
+        {
+            "op": "add_link",
+            "body": {
+                "ty": "one_to_many",
+                "from": "todo",
+                "to": "category"
+            }
+        }
+    "#).await;
+
+    { ... some dumpy data }
+
+    let result = client.exec(r#"
+        {
+            "op": "fetch_many",
+            "body": {
+                "base": "todo",
+                "filters": [
+                    { "ty": "col_like", "col": "title", "value": "i" }
+                ],
+                "links": [
+                    { "ty": "one_to_many", "to": "category" }
+                ],
+                "pagination": { 
+                    "limit": 3, 
+                    "first_item": { "id": 3 }, 
+                    "order_by": [] 
+                }
+            }
+        }
+    "#).await;
+
+    assert_exec_output(result, r#"
+        {
+            "output":{
+                "items": [
+                    {
+                        "id": 3,
+                        "attributes": { 
+                            "title": "third_todo", 
+                            "description": "description", 
+                            "done": false 
+                        },
+                        "links": [ 
+                            { "id": 2, "attributes": { "title": "cat_2" } },
+                        ]
+                    },
+                    {
+                        "id": 5,
+                        "attributes": { 
+                            "title": "fifth_todo", 
+                            "description": "description", 
+                            "done": false 
+                        },
+                        "links": [ 
+                            null
+                        ]
+                    },
+                    {
+                        "id": 6,
+                        "attributes": { 
+                            "title": "sixth_todo", 
+                            "description": "description", 
+                            "done": true 
+                        },
+                        "links": [ 
+                            null
+                        ]
+                    },
+                ],
+                "next_item": { "id": 8 }
+            }
+        }
+    "#);
+```
+
+## Zero-Cost
+The previous example uses `JsonClient` which is suitable for creating and modifing collection at a runtime, this is done by relying on storing many trait objects on the heap. 
+
+If you don't want to put up with that cost and know your schema at the build time you can use `linked_ql_macros`, this example will give you almost identical performance compared to writing sql statement by hand
+
+```Rust
+define_collection!(
+    struct Todo {
+        title: String,
+        description: Option<String>,
+        done: bool,
+    }
+);
+
+define_collection!(
+    struct Category {
+        title: String,
+    }
+);
+
+impl Link<TodoHandler> for CategoryHandler {
+    type Spec = OneToMany<DefaultRelationKey, TodoHandler, CategoryHandler>;
+
+    fn spec(self) -> Self::Spec {
+        OneToMany {
+            fk_unique_id: DefaultRelationKey,
+            from: TodoHandler,
+            to: CategoryHandler,
         }
     }
 }
 
 #[tokio::test]
-async fn main() {
-    let pool = Sqlite::connect_in_memory().await;
+async fn test_zero_cost() {
+    { ... initialize sqlx and load dumpy data }
 
-    use claw_ql::expressions::col_eq;
-    use claw_ql::links::relation_optional_to_many::optional_to_many;
-    use claw_ql::links::set_new_mod::set_new;
-    use claw_ql::test_module::{Category, Todo, category, todo, todo_members};
+    let todo = fetch_many(FetchManyOp {
+        base: TodoHandler,
+        filters: ColumnLikeFilter {
+            col: todo_members::TitleField,
+            value: Bind("i"),
+        },
+        links: CategoryHandler,
+        pagination: Pagination {
+            limit: 10,
+            offset: 0,
+            order_by: (),
+        },
+    }, &mut conn).await;
 
-    sql!(MIGRATE todo).await;
-    sql!(MIGRATE category).await;
-    sql!(MIGRATE optional_to_many {
-        from: todo,
-        to: category,
-        foriegn_key: "category_id".to_string()
-    })
-    .await;
-
-    sql!(
-        INSERT Todo { title:"first_todo".to_string(), done: false, description: None }
-            LINK set_new(Category { title: "cat_1".to_string() })
-    )
-    .await;
-
-    let result = sql!(
-        SELECT FROM todo t
-        LINK category
-        WHERE t.title.col_eq("first_todo".to_string())
-    )
-    .await;
-
-    pretty_assertions::assert_eq!(
-        result,
-        Some(LinkedOutput {
-            id: 0,
-            attributes: Todo {
-                title: "first_todo".to_string(),
-                done: false,
-                description: None
-            },
-            links: (Some(CollectionOutput {
-                id: 0,
-                attributes: Category {
-                    title: "cat_1".to_string()
-                }
-            }),),
-        })
-    );
-}
-```
-
-`sql` macro doesn't do too much magic -- you can just construct types that implement `Operation` and call `exec_operation` on them. I made the macro to create an similar experience to SQL syntax
-
-Note that this API is heavy on the type system, if you want to create an HTTP server, use `JsonClient`. This API rely on extension traits and trait objects to create a more dynamic/runtime experience at zero effort. 
-
-```Rust
-#[tokio::test]
-async fn json_client_test() {
-    let mut jc = JsonClient::from(
-        (
-            Schema {
-                collections: (todo, category)
-                links: (optional_to_many {
-                    foriegn_key: "category_id".to_string(),
-                    from: todo,
-                    to: category,
-                },)
-            },
-            pool,
-        )
-    );
-
-    let out = jc
-        .fetch_one(json!({
-            "base": "todo",
-            "wheres": [],
-            "link": [
-                {
-                    "id": "category_id",
-                    "ty": "optional_to_many",
-                    "to": "category",
+    assert_eq!(todo, ManyOutput {
+        items: vec![
+            LinkedOutput {
+                id: 3,
+                attributes: Todo {
+                    title: "third_todo".to_string(),
+                    description: Some("description".to_string()),
+                    done: false,
                 },
-            ]
-        }))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        out,
-        json!({
-            "attributes": {
-                "title": "first_todo",
-                "done": true,
-                "description": "description_1"
+                links: Some(
+                    CollectionOutput {
+                        id: 2,
+                        attributes: Category {
+                            title: "cat_2".to_string(),
+                        },
+                    }
+                )
             },
-            "id": 6,
-            "link": [{
-                "attributes": { "title": "cat_1" },
-                "id": 3,
-            }]
-        }),
-    );
+            LinkedOutput {
+                id: 5,
+                attributes: Todo {
+                    title: "fifth_todo".to_string(),
+                    description: Some("description".to_string()),
+                    done: false,
+                },
+                links: None,
+            },
+            LinkedOutput {
+                id: 6,
+                attributes: Todo {
+                    title: "sixth_todo".to_string(),
+                    description: Some("description".to_string()),
+                    done: false,
+                },
+                links: None,
+            }
+        ],
+        next_item: NextItem {
+            id: 8,
+            other_fields: ()
+        },
+    });
 }
 ```
 
-# What are links
-This is the bread and butter of this crate, they use foreign keys, joins, and sessions when necessary to optimize performance, I'm not aiming to replace foreign keys -- I think storing data in tables with FKs between them is solid idea, however retrieving data as tables via string-based query is tedious and error-prone. 
+These two examples are picked from "test" folder, you can check the complete code there.
 
-I always had a dilemma whether to use the SQL client directly with hardcoded statements or use an ORM, and I figured out the problem finaly -- replace joins with links, I have a blog post talking about that in details. If there is a database that provide link-base interface, use FKs and joins internally, and you can query via something similar to BSON, this would make 90% or this crate (and most aother ORMs) unnecesary.
+## Initialize
+This crate depends on a patched version of sqlx, use `patch-crate`
+```
+    cargo install patch-crate       # if you don't have the crate downloaed
+    cargo patch-crate               # initialize target/patch/* patched crates
+                                    # using original source code and /patches modification
+    cargo check                     # now cargo commands work
+```
 
-# I'm looking for help
-
-this is proof of concept, I have full CRUD API written but in an older version of this crate, reimplemnting everything is straight forward, I mainly looking for time or contribution to complete.

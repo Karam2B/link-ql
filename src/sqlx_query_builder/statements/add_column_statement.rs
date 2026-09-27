@@ -10,7 +10,8 @@ pub struct DropColumn<Table, Name> {
     pub col_name: Name,
 }
 
-impl<Table, ColDef> OpExpression for AddColumn<Table, ColDef> {}
+impl<Table, ColDef> OpExpression for AddColumn<Table, ColDef> {
+}
 
 mod impl_for_sqlx_fo {
     use crate::{
@@ -24,8 +25,8 @@ mod impl_for_sqlx_fo {
     impl<'q, S, Table, ColDef> Expression<'q, S> for AddColumn<Table, ColDef>
     where
         S: Database + DatabaseExt,
-        Table: Expression<'q, S> + 'q,
-        ColDef: Expression<'q, S> + 'q,
+        Table: Expression<'q, S>,
+        ColDef: Expression<'q, S>,
     {
         fn expression(self, ctx: &mut StatementBuilder<'q, S>) {
             ctx.syntax("ALTER TABLE ");

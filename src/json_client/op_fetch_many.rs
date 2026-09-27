@@ -3,32 +3,35 @@ use tokio::sync::{RwLock, RwLockReadGuard};
 
 use crate::{
     database_extention::DatabaseExt,
-    expressions::ColumnEqual,
-    extentions::named_bind::NamedBind,
     fix_executor::ExecutorTrait,
     from_row::FromRowAlias,
     gen_serde::{Serialize, json_serialize_side::JsonAsString},
     json_client::{
-        DynOptionalToMany, DynTimestamp, ToBind,
+        DynOneToMany, DynTimestamp, ToBind,
         client_interface::{
             FetchManyError, FetchManyInput, FetchManyOutput, FirstItem, InsertOneInput,
             InsertOneOutput, OrderBy, Pagination, SupportedInsertLink, SupportedLinkFetchMany,
         },
         dynamic_collection::{CollectionToSerialize, DynamicCollection, VTable},
+        compat::dynamic_input::NamedBindList,
         op_fetch_many_trait_extension::JsonLinkFetchMany,
         sqlx_executor::{FromTo, LinkInformations, SqlxExecutorData},
         supported_filters::parse_supported_filter,
     },
     links::{
         DefaultRelationKey, relation_many_to_many::ManyToMany,
-        relation_optional_to_many::OptionalToMany,
-        relation_optional_to_many_inverse::OptionalToManyInverse, timestamp::Timestamp,
+        relation_one_to_many::OneToMany,
+        relation_one_to_many_inverse::OneToManyInverse, timestamp::Timestamp,
     },
     operations::{
         CollectionOutput, Operation,
         fetch_many::{FetchMany, ManyOutput},
+        operations_expressions_crossover::NamedBind,
     },
-    sqlx_query_builder::trait_objects::BoxedExpression,
+    sqlx_query_builder::{
+        Join,
+        trait_objects::BoxedExpression,
+    },
     sub_arc::ArcSubStr,
 };
 use std::collections::{BTreeMap, HashMap};
@@ -51,11 +54,11 @@ pub fn fetch_many<S>(
 where
     S: DatabaseExt + ExecutorTrait + Send + Sync,
     Arc<DynamicCollection<S>>: for<'r> FromRowAlias<'r, S::Row, RData = CollectionToSerialize>,
-    OptionalToMany<DefaultRelationKey, Arc<DynamicCollection<S>>, Arc<DynamicCollection<S>>>:
+    OneToMany<DefaultRelationKey, Arc<DynamicCollection<S>>, Arc<DynamicCollection<S>>>:
         JsonLinkFetchMany<S>,
-    OptionalToManyInverse<DefaultRelationKey, Arc<DynamicCollection<S>>, Arc<DynamicCollection<S>>>:
+    OneToManyInverse<DefaultRelationKey, Arc<DynamicCollection<S>>, Arc<DynamicCollection<S>>>:
         JsonLinkFetchMany<S>,
-    ManyToMany<DefaultRelationKey, Arc<DynamicCollection<S>>, Arc<DynamicCollection<S>>>:
+    ManyToMany<false, DefaultRelationKey, Arc<DynamicCollection<S>>, Arc<DynamicCollection<S>>>:
         JsonLinkFetchMany<S>,
     Timestamp<Arc<DynamicCollection<S>>>: JsonLinkFetchMany<S>,
     i64: for<'q> Decode<'q, S> + for<'q> Encode<'q, S> + Type<S>,
@@ -83,7 +86,7 @@ where
 
         for each in input.links {
             match each {
-                SupportedLinkFetchMany::OptionalToMany { to } => {
+                SupportedLinkFetchMany::OneToMany { to } => {
                     let to_collection_l = cols_gaurd
                         .get(to.as_str())
                         .ok_or(FetchManyError::InvalidLink)?
@@ -102,14 +105,14 @@ where
                         to: Arc::clone(&base.collection_name.snake_case),
                     };
 
-                    if rel_gaurd.optional_to_many.contains(&forward) {
-                        links.push(Box::new(OptionalToMany {
+                    if rel_gaurd.one_to_many.contains(&forward) {
+                        links.push(Box::new(OneToMany {
                             fk_unique_id: DefaultRelationKey,
                             from: Arc::clone(&base),
                             to: to_collection,
                         }));
-                    } else if rel_gaurd.optional_to_many.contains(&reverse) {
-                        links.push(Box::new(OptionalToManyInverse {
+                    } else if rel_gaurd.one_to_many.contains(&reverse) {
+                        links.push(Box::new(OneToManyInverse {
                             fk_unique_id: DefaultRelationKey,
                             from: Arc::clone(&base),
                             to: to_collection,
@@ -202,8 +205,8 @@ pub mod dynamic_order_by_mod {
 
     use crate::{
         database_extention::DatabaseExt,
-        extentions::common_expressions::Scoped,
-        from_row::{FromRowAlias, FromRowData, FromRowError, from_row_v2::RowAliased},
+        operations::operations_expressions_crossover::ExpressionsForOperation,
+        from_row::{FromRowAlias, FromRowData, FromRowError, RowNumAliased, RowStrAliased, from_row_v2::RowAliased},
         gen_serde::{Serialize, json_serialize_side::JsonAsString},
         json_client::{
             client_interface::{Direction, OrderBy},
@@ -241,18 +244,167 @@ pub mod dynamic_order_by_mod {
         }
     }
 
-    impl<S> Scoped for Vec<DynamicOrderBy<S>>
+    pub struct DynamicOrderByList<S>(pub Vec<DynamicOrderBy<S>>)
+    where
+        S: DatabaseExt;
+
+    pub struct DynamicOrderByListScoped<S>(pub Vec<DynamicOrderBy<S>>)
+    where
+        S: DatabaseExt;
+
+    impl<S> Clone for DynamicOrderByListScoped<S>
     where
         S: DatabaseExt,
+        DynamicOrderBy<S>: Clone,
     {
-        type Scoped = Vec<DynamicOrderBy<S>>;
-
-        fn scoped(&self) -> Self::Scoped {
-            self.clone()
+        fn clone(&self) -> Self {
+            Self(self.0.clone())
         }
     }
 
-    impl<S> OpExpression for DynamicOrderBy<S> where S: DatabaseExt + Database {}
+    impl<S> Clone for DynamicOrderByList<S>
+    where
+        S: DatabaseExt,
+        DynamicOrderBy<S>: Clone,
+    {
+        fn clone(&self) -> Self {
+            Self(self.0.clone())
+        }
+    }
+
+    impl<S> ExpressionsForOperation for DynamicOrderByList<S>
+    where
+        S: DatabaseExt,
+    {
+        type Identifier = Vec<DynamicOrderBy<S>>;
+        fn identifier(&self) -> Self::Identifier {
+            self.0.clone()
+        }
+
+        type Scoped = DynamicOrderByListScoped<S>;
+        fn scoped(&self) -> Self::Scoped {
+            DynamicOrderByListScoped(self.0.clone())
+        }
+
+        type ScopedAliased = ();
+        fn scoped_aliased(&self, _: &'static str) -> Self::ScopedAliased {}
+
+        type NumScopedAliased = ();
+        fn num_scoped_aliased(&self, _: usize, _: &'static str) -> Self::NumScopedAliased {}
+    }
+
+    impl<S> ExpressionsForOperation for DynamicOrderBy<S>
+    where
+        S: DatabaseExt,
+    {
+        type Identifier = &'static str;
+        fn identifier(&self) -> Self::Identifier {
+            "order_by"
+        }
+
+        type Scoped = DynamicOrderBy<S>;
+        fn scoped(&self) -> Self::Scoped {
+            self.clone()
+        }
+
+        type ScopedAliased = ();
+        fn scoped_aliased(&self, _: &'static str) -> Self::ScopedAliased {}
+
+        type NumScopedAliased = ();
+        fn num_scoped_aliased(&self, _: usize, _: &'static str) -> Self::NumScopedAliased {}
+    }
+
+    impl<S> OpExpression for DynamicOrderByListScoped<S>
+    where
+        S: DatabaseExt,
+    {
+        fn is_expression_present(&self) -> bool {
+            !self.0.is_empty()
+        }
+    }
+
+    impl<'q, S> Expression<'q, S> for DynamicOrderByListScoped<S>
+    where
+        S: DatabaseExt,
+        DynamicOrderBy<S>: Expression<'q, S>,
+    {
+        fn expression(self, ctx: &mut StatementBuilder<'q, S>) {
+            if self.0.is_empty() {
+                return;
+            }
+            let mut first = true;
+            for item in self.0 {
+                if !first {
+                    ctx.syntax(", ");
+                }
+                first = false;
+                item.expression(ctx);
+            }
+        }
+    }
+
+    impl<S> FromRowData for DynamicOrderByList<S>
+    where
+        S: DatabaseExt,
+        DynamicOrderBy<S>: FromRowData,
+    {
+        type RData = BTreeMap<String, Box<dyn Serialize<JsonAsString> + Send>>;
+    }
+
+    impl<'r, S> FromRowAlias<'r, S::Row> for DynamicOrderByList<S>
+    where
+        S: DatabaseExt + Database,
+        DynamicOrderBy<S>: FromRowAlias<
+            'r,
+            S::Row,
+            RData = (String, Box<dyn Serialize<JsonAsString> + Send>),
+        >,
+    {
+        fn no_alias(&self, row: &'r S::Row) -> Result<Self::RData, FromRowError> {
+            let mut ret = BTreeMap::new();
+            for item in &self.0 {
+                let (col, value): (String, Box<dyn Serialize<JsonAsString> + Send>) =
+                    item.no_alias(row)?;
+                ret.insert(col, value);
+            }
+            Ok(ret)
+        }
+
+        fn str_alias(
+            &self,
+            row: RowStrAliased<'r, S::Row>,
+        ) -> Result<Self::RData, FromRowError>
+        where
+            S::Row: Row,
+        {
+            let mut ret = BTreeMap::new();
+            for item in &self.0 {
+                let (col, value): (String, Box<dyn Serialize<JsonAsString> + Send>) =
+                    item.str_alias(row.clone())?;
+                ret.insert(col, value);
+            }
+            Ok(ret)
+        }
+
+        fn num_alias(
+            &self,
+            row: RowNumAliased<'r, S::Row>,
+        ) -> Result<Self::RData, FromRowError>
+        where
+            S::Row: Row,
+        {
+            let mut ret = BTreeMap::new();
+            for item in &self.0 {
+                let (col, value): (String, Box<dyn Serialize<JsonAsString> + Send>) =
+                    item.num_alias(row.clone())?;
+                ret.insert(col, value);
+            }
+            Ok(ret)
+        }
+    }
+
+    impl<S> OpExpression for DynamicOrderBy<S> where S: DatabaseExt + Database {
+}
 
     impl<'q, S> Expression<'q, S> for DynamicOrderBy<S>
     where
@@ -289,9 +441,9 @@ pub mod dynamic_order_by_mod {
             Ok((self.col.to_string(), value))
         }
 
-        fn pre_alias(
+        fn str_alias(
             &self,
-            row: crate::from_row::RowPreAliased<'r, S::Row>,
+            row: crate::from_row::RowStrAliased<'r, S::Row>,
         ) -> Result<Self::RData, FromRowError>
         where
             S::Row: Row,
@@ -304,19 +456,9 @@ pub mod dynamic_order_by_mod {
             Ok((self.col.to_string(), value))
         }
 
-        fn post_alias(
+        fn num_alias(
             &self,
-            row: crate::from_row::RowPostAliased<'r, S::Row>,
-        ) -> Result<Self::RData, FromRowError>
-        where
-            S::Row: Row,
-        {
-            self.no_alias(row.get_sqlx_row())
-        }
-
-        fn two_alias(
-            &self,
-            row: crate::from_row::RowTwoAliased<'r, S::Row>,
+            row: crate::from_row::RowNumAliased<'r, S::Row>,
         ) -> Result<Self::RData, FromRowError>
         where
             S::Row: Row,
@@ -356,41 +498,31 @@ pub mod dynamic_order_by_mod {
             Ok(ret)
         }
 
-        fn pre_alias(
+        fn str_alias(
             &self,
-            row: crate::from_row::RowPreAliased<'r, S::Row>,
+            row: crate::from_row::RowStrAliased<'r, S::Row>,
         ) -> Result<Self::RData, FromRowError>
         where
             S::Row: Row,
         {
             let mut ret = BTreeMap::new();
             for each in self {
-                let (col, value) = each.pre_alias(row.clone())?;
+                let (col, value) = each.str_alias(row.clone())?;
                 ret.insert(col, value);
             }
             Ok(ret)
         }
 
-        fn post_alias(
+        fn num_alias(
             &self,
-            row: crate::from_row::RowPostAliased<'r, S::Row>,
-        ) -> Result<Self::RData, FromRowError>
-        where
-            S::Row: Row,
-        {
-            self.no_alias(row.get_sqlx_row())
-        }
-
-        fn two_alias(
-            &self,
-            row: crate::from_row::RowTwoAliased<'r, S::Row>,
+            row: crate::from_row::RowNumAliased<'r, S::Row>,
         ) -> Result<Self::RData, FromRowError>
         where
             S::Row: Row,
         {
             let mut ret = BTreeMap::new();
             for each in self {
-                let (col, value) = each.two_alias(row.clone())?;
+                let (col, value) = each.num_alias(row.clone())?;
                 ret.insert(col, value);
             }
             Ok(ret)
@@ -400,7 +532,7 @@ pub mod dynamic_order_by_mod {
     pub fn process_order_by<S>(
         base: &DynamicCollection<S>,
         order_by: &[OrderBy],
-    ) -> Option<Vec<DynamicOrderBy<S>>>
+    ) -> Option<DynamicOrderByList<S>>
     where
         S: DatabaseExt,
     {
@@ -424,17 +556,14 @@ pub mod dynamic_order_by_mod {
             });
         }
 
-        Some(ret)
+        Some(DynamicOrderByList(ret))
     }
 }
 
 fn process_first_item<S>(
     base: &DynamicCollection<S>,
     pagination: &Option<FirstItem>,
-) -> Result<
-    Option<CollectionOutput<i64, Vec<NamedBind<Arc<str>, Arc<str>, Box<dyn ToBind<S> + Send>>>>>,
-    (),
->
+) -> Result<Option<CollectionOutput<i64, NamedBindList<S>>>, ()>
 where
     S: DatabaseExt,
 {
@@ -455,7 +584,7 @@ where
 
         Ok(Some(CollectionOutput {
             id: first_item.id,
-            attributes,
+            attributes: NamedBindList(attributes),
         }))
     } else {
         Ok(None)

@@ -7,12 +7,18 @@ use tracing::warn;
 
 use crate::{
     database_extention::DatabaseExt,
-    extentions::common_expressions::Aliased,
     from_row::{FromRowAlias, FromRowData},
     gen_serde::{Serialize, SerializedJson, json_serialize_side::JsonAsString},
-    operations::{OperationOutput, boxed_operation::BoxedOperation, fetch_many::LinkFetch},
-    select_items_trait_object::{SelectItemsTraitObject, ToImplSelectItems},
-    sqlx_query_builder::trait_objects::ManyBoxedExpressions,
+    json_client::select_items_trait_object::{SelectItemsTraitObject, ToImplSelectItems},
+    operations::{
+        OperationOutput, boxed_operation::BoxedOperation, fetch_many::LinkFetch,
+        operations_expressions_crossover::ExpressionsForOperation,
+    },
+    sqlx_query_builder::{
+        Expression, Join,
+        combinators::OptionalExpression,
+        trait_objects::{box_expression, BoxedExpression},
+    },
 };
 
 pub trait JsonLinkFetchMany<S> {
@@ -25,8 +31,8 @@ pub trait JsonLinkFetchMany<S> {
         item: Box<dyn Any + Send>,
         op: &mut Box<dyn Any + Send>,
     ) -> Box<dyn Serialize<JsonAsString> + Send>;
-    fn join_expr(&self) -> Box<dyn ManyBoxedExpressions<S> + Send>;
-    fn wheres_expr(&self) -> Box<dyn ManyBoxedExpressions<S> + Send>;
+    fn join_expr(&self) -> Box<dyn BoxedExpression<S> + Send>;
+    fn wheres_expr(&self) -> Box<dyn BoxedExpression<S> + Send>;
 }
 
 impl<S, T> JsonLinkFetchMany<S> for T
@@ -37,26 +43,30 @@ where
     S: DatabaseExt,
     T: LinkFetch,
     T::SelectItems: Send
-        + Aliased<
-            NumAliased: 'static + Send + ManyBoxedExpressions<S>,
-            Aliased: 'static + Send + ManyBoxedExpressions<S>,
+        + ExpressionsForOperation<
+            NumScopedAliased: 'static + Send + OptionalExpression,
+            ScopedAliased: 'static + Send + OptionalExpression,
         >,
+    for<'e> Join<<T::SelectItems as ExpressionsForOperation>::NumScopedAliased>: Expression<'e, S>,
+    for<'e> Join<<T::SelectItems as ExpressionsForOperation>::ScopedAliased>: Expression<'e, S>,
     T::OpInput: 'static + Send,
     T::Op: Send + 'static + BoxedOperation<S>,
     T::Op: OperationOutput,
     T::Output: Serialize<JsonAsString>,
     T::SelectItems: FromRowData<RData: Send + 'static>,
     T::SelectItems: for<'r> FromRowAlias<'r, S::Row>,
-    T::Join: Send + 'static + ManyBoxedExpressions<S>,
-    T::Wheres: Send + 'static + ManyBoxedExpressions<S>,
+    T::Join: Send + 'static + OptionalExpression,
+    for<'e> Join<T::Join>: Expression<'e, S>,
+    T::Wheres: Send + 'static + OptionalExpression,
+    for<'e> Join<T::Wheres>: Expression<'e, S>,
     T::Output: Send + fmt::Debug,
 {
-    fn join_expr(&self) -> Box<dyn ManyBoxedExpressions<S> + Send> {
-        Box::new(self.non_duplicating_join_expressions())
+    fn join_expr(&self) -> Box<dyn BoxedExpression<S> + Send> {
+        box_expression(self.non_duplicating_join_expressions(), " ")
     }
 
-    fn wheres_expr(&self) -> Box<dyn ManyBoxedExpressions<S> + Send> {
-        Box::new(self.where_expressions())
+    fn wheres_expr(&self) -> Box<dyn BoxedExpression<S> + Send> {
+        box_expression(self.where_expressions(), " AND ")
     }
 
     fn take_2(
@@ -131,13 +141,13 @@ where
         self.take_2(item, op)
     }
 
-    type Join = Box<dyn ManyBoxedExpressions<S> + Send>;
+    type Join = Box<dyn BoxedExpression<S> + Send>;
 
     fn non_duplicating_join_expressions(&self) -> Self::Join {
         self.join_expr()
     }
 
-    type Wheres = Box<dyn ManyBoxedExpressions<S> + Send>;
+    type Wheres = Box<dyn BoxedExpression<S> + Send>;
 
     fn where_expressions(&self) -> Self::Wheres {
         self.wheres_expr()
@@ -164,6 +174,7 @@ where
 impl<'r, S> LinkFetch for Vec<Box<dyn JsonLinkFetchMany<S> + Send + 'r>>
 where
     S: Database,
+    S: DatabaseExt,
     Vec<Box<dyn SelectItemsTraitObject<S, ()>>>: FromRowData<RData = Vec<Box<dyn Any + Send>>>,
     Vec<Box<dyn BoxedOperation<S> + Send>>: OperationOutput<Output = Vec<Box<dyn Any + Send>>>,
 {
@@ -201,12 +212,12 @@ where
             .collect()
     }
 
-    type Join = Box<dyn ManyBoxedExpressions<S> + Send>;
+    type Join = Box<dyn BoxedExpression<S> + Send>;
 
     fn non_duplicating_join_expressions(&self) -> Self::Join {
         if let Some(first) = self.first() {
             warn!("multiple links");
-            Box::new(first.join_expr())
+            first.join_expr()
         } else {
             Box::new(())
         }

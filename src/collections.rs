@@ -70,7 +70,7 @@ mod single_incremintal_int_from_row {
 
     use super::SingleIncremintalInt;
     use crate::from_row::{
-        FromRowAlias, FromRowData, FromRowError, RowPostAliased, RowPreAliased, RowTwoAliased,
+        FromRowAlias, FromRowData, FromRowError, RowStrAliased, RowNumAliased,
         TryFromRowAlias,
     };
 
@@ -87,13 +87,10 @@ mod single_incremintal_int_from_row {
         fn no_alias(&self, row: &'r R) -> Result<Self::RData, FromRowError> {
             Ok(row.try_get("id")?)
         }
-        fn pre_alias(&self, row: RowPreAliased<'r, R>) -> Result<Self::RData, FromRowError> {
+        fn str_alias(&self, row: RowStrAliased<'r, R>) -> Result<Self::RData, FromRowError> {
             Ok(row.try_get("id")?)
         }
-        fn post_alias(&self, row: RowPostAliased<'r, R>) -> Result<Self::RData, FromRowError> {
-            Ok(row.try_get("id")?)
-        }
-        fn two_alias(&self, row: RowTwoAliased<'r, R>) -> Result<Self::RData, FromRowError> {
+        fn num_alias(&self, row: RowNumAliased<'r, R>) -> Result<Self::RData, FromRowError> {
             Ok(row.try_get("id")?)
         }
     }
@@ -108,9 +105,9 @@ mod single_incremintal_int_from_row {
             Ok(row.get("id"))
         }
 
-        fn try_pre_alias(
+        fn try_str_alias(
             &self,
-            row: RowPreAliased<'r, R>,
+            row: RowStrAliased<'r, R>,
         ) -> Result<Option<Self::RData>, FromRowError>
         where
             R: Row,
@@ -118,19 +115,9 @@ mod single_incremintal_int_from_row {
             Ok(row.get("id"))
         }
 
-        fn try_two_alias(
+        fn try_num_alias(
             &self,
-            row: RowTwoAliased<'r, R>,
-        ) -> Result<Option<Self::RData>, FromRowError>
-        where
-            R: Row,
-        {
-            Ok(row.get("id"))
-        }
-
-        fn try_post_alias(
-            &self,
-            row: RowPostAliased<'r, R>,
+            row: RowNumAliased<'r, R>,
         ) -> Result<Option<Self::RData>, FromRowError>
         where
             R: Row,
@@ -140,7 +127,7 @@ mod single_incremintal_int_from_row {
     }
 }
 
-#[claw_ql_macros::skip]
+#[linked_sql_macros::skip]
 pub(crate) mod impl_id {
     use sqlx::Sqlite;
     use tracing::warn;
@@ -155,6 +142,7 @@ pub(crate) mod impl_id {
         sqlx_query_builder::{
             Expression, OpExpression, StatementBuilder,
             basic_expressions::{AliasedScopedColumn, Bind, ScopedColumn, UpdatingColumn},
+            sanitize_combinator::Sanitize,
         },
         update_mod::Update,
     };
@@ -188,73 +176,82 @@ pub(crate) mod impl_id {
     impl<T> SingleColumnId for SingleIncremintalInt<T> {}
 
     impl Aliased for SingleIncremintalInt<&'static str> {
-        type Aliased =
-            AliasedScopedColumn<(&'static str,), (&'static str,), (&'static str, &'static str)>;
+        type Aliased = AliasedScopedColumn<
+            &'static str,
+            &'static str,
+            Sanitize<(&'static str, &'static str)>,
+        >;
         fn aliased(&self, alias: &'static str) -> Self::Aliased {
             AliasedScopedColumn {
-                table: (&self.0,),
-                column: ("id",),
-                alias: (alias, "id"),
+                table: self.0,
+                column: "id",
+                alias: Sanitize((alias, "id")),
             }
         }
         type NumAliased = AliasedScopedColumn<
-            (&'static str,),
-            (&'static str,),
-            (&'static str, usize, &'static str),
+            &'static str,
+            &'static str,
+            Sanitize<(&'static str, usize, &'static str)>,
         >;
         fn num_aliased(&self, num: usize, alias: &'static str) -> Self::NumAliased {
             AliasedScopedColumn {
-                table: (&self.0,),
-                column: ("id",),
-                alias: (alias, num, "id"),
+                table: self.0,
+                column: "id",
+                alias: Sanitize((alias, num, "id")),
             }
         }
     }
 
     impl Aliased for SingleIncremintalInt<String> {
-        type Aliased =
-            AliasedScopedColumn<(String,), (&'static str,), (&'static str, &'static str)>;
+        type Aliased = AliasedScopedColumn<
+            String,
+            &'static str,
+            Sanitize<(&'static str, &'static str)>,
+        >;
         fn aliased(&self, alias: &'static str) -> Self::Aliased {
             AliasedScopedColumn {
-                table: (self.0.clone(),),
-                column: ("id",),
-                alias: (alias, "id"),
+                table: self.0.clone(),
+                column: "id",
+                alias: Sanitize((alias, "id")),
             }
         }
-        type NumAliased =
-            AliasedScopedColumn<(String,), (&'static str,), (&'static str, usize, &'static str)>;
+        type NumAliased = AliasedScopedColumn<
+            String,
+            &'static str,
+            Sanitize<(&'static str, usize, &'static str)>,
+        >;
         fn num_aliased(&self, num: usize, alias: &'static str) -> Self::NumAliased {
             AliasedScopedColumn {
-                table: (self.0.clone(),),
-                column: ("id",),
-                alias: (alias, num, "id"),
+                table: self.0.clone(),
+                column: "id",
+                alias: Sanitize((alias, num, "id")),
             }
         }
     }
 
     impl Aliased for SingleIncremintalInt<std::sync::Arc<str>> {
         type Aliased = AliasedScopedColumn<
-            (std::sync::Arc<str>,),
-            (&'static str,),
-            (&'static str, &'static str),
+            std::sync::Arc<str>,
+            &'static str,
+            Sanitize<(&'static str, &'static str)>,
         >;
         fn aliased(&self, alias: &'static str) -> Self::Aliased {
             AliasedScopedColumn {
-                table: (std::sync::Arc::clone(&self.0),),
-                column: ("id",),
-                alias: (alias, "id"),
+                table: std::sync::Arc::clone(&self.0),
+                column: "id",
+                alias: Sanitize((alias, "id")),
             }
         }
         type NumAliased = AliasedScopedColumn<
-            (std::sync::Arc<str>,),
-            (&'static str,),
-            (&'static str, usize, &'static str),
+            std::sync::Arc<str>,
+            &'static str,
+            Sanitize<(&'static str, usize, &'static str)>,
         >;
         fn num_aliased(&self, num: usize, alias: &'static str) -> Self::NumAliased {
             AliasedScopedColumn {
-                table: (std::sync::Arc::clone(&self.0),),
-                column: ("id",),
-                alias: (alias, num, "id"),
+                table: std::sync::Arc::clone(&self.0),
+                column: "id",
+                alias: Sanitize((alias, num, "id")),
             }
         }
     }
@@ -334,7 +331,8 @@ pub(crate) mod impl_id {
         }
     }
 
-    impl OpExpression for IdMigration {}
+    impl OpExpression for IdMigration {
+}
     impl<'q> Expression<'q, Sqlite> for IdMigration {
         fn expression(self, ctx: &mut StatementBuilder<'q, Sqlite>) {
             ctx.syntax(&"\"id\" INTEGER PRIMARY KEY AUTOINCREMENT");
@@ -346,7 +344,7 @@ pub(crate) mod impl_id {
 
         use super::SingleIncremintalInt;
         use crate::from_row::{
-            FromRowAlias, FromRowData, FromRowError, RowPostAliased, RowPreAliased, RowTwoAliased,
+            FromRowAlias, FromRowData, FromRowError, RowStrAliased, RowNumAliased,
             TryFromRowAlias,
         };
 
@@ -363,13 +361,10 @@ pub(crate) mod impl_id {
             fn no_alias(&self, row: &'r R) -> Result<Self::RData, FromRowError> {
                 Ok(row.try_get("id")?)
             }
-            fn pre_alias(&self, row: RowPreAliased<'r, R>) -> Result<Self::RData, FromRowError> {
+            fn str_alias(&self, row: RowStrAliased<'r, R>) -> Result<Self::RData, FromRowError> {
                 Ok(row.try_get("id")?)
             }
-            fn post_alias(&self, row: RowPostAliased<'r, R>) -> Result<Self::RData, FromRowError> {
-                Ok(row.try_get("id")?)
-            }
-            fn two_alias(&self, row: RowTwoAliased<'r, R>) -> Result<Self::RData, FromRowError> {
+            fn num_alias(&self, row: RowNumAliased<'r, R>) -> Result<Self::RData, FromRowError> {
                 Ok(row.try_get("id")?)
             }
         }
@@ -385,9 +380,9 @@ pub(crate) mod impl_id {
                 Ok(row.get("id"))
             }
 
-            fn try_pre_alias(
+            fn try_str_alias(
                 &self,
-                row: RowPreAliased<'r, R>,
+                row: RowStrAliased<'r, R>,
             ) -> Result<Option<Self::RData>, FromRowError>
             where
                 R: Row,
@@ -395,19 +390,9 @@ pub(crate) mod impl_id {
                 Ok(row.get("id"))
             }
 
-            fn try_two_alias(
+            fn try_num_alias(
                 &self,
-                row: RowTwoAliased<'r, R>,
-            ) -> Result<Option<Self::RData>, FromRowError>
-            where
-                R: Row,
-            {
-                Ok(row.get("id"))
-            }
-
-            fn try_post_alias(
-                &self,
-                row: RowPostAliased<'r, R>,
+                row: RowNumAliased<'r, R>,
             ) -> Result<Option<Self::RData>, FromRowError>
             where
                 R: Row,

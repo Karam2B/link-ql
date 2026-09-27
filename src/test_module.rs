@@ -1,3 +1,7 @@
+#[cfg(test)]
+use crate::links::{DefaultRelationKey, Link, relation_one_to_many::OneToMany};
+
+#[macro_export]
 macro_rules! define_collection {
     (struct $pascal_case:ident $size:literal {$(
         $member:ident: $type:ty,
@@ -8,7 +12,7 @@ macro_rules! define_collection {
             }
         };
 
-        paste::paste! {
+        $crate::paste_crate::paste! {
         #[derive(Debug, PartialEq, Eq, Clone)]
         pub struct $pascal_case {
             $(
@@ -34,7 +38,7 @@ macro_rules! define_collection {
 
         // impl Singleton for $name
         const _: () = {
-            use crate::singleton::Singleton;
+            use $crate::singleton::Singleton;
             impl Singleton for [<$pascal_case Handler>] {
                 fn singleton() -> &'static Self {
                     &[<$pascal_case Handler>]
@@ -44,7 +48,7 @@ macro_rules! define_collection {
 
         // impl AsTuple for $name
         const _: () = {
-            use crate::tuple_trait::AsTuple;
+            use $crate::tuple_trait::AsTuple;
             impl AsTuple for $pascal_case {
                 type Tuple = ($($type,)*);
                 const NAMES: &'static [&'static str] = &[$(stringify!($member),)*];
@@ -74,8 +78,8 @@ macro_rules! define_collection {
 
         // impl Collection for $pascal_case
         const _: () = {
-            use crate::collections::Collection;
-            use crate::collections::SingleIncremintalInt;
+            use $crate::collections::Collection;
+            use $crate::collections::SingleIncremintalInt;
             impl Collection for [<$pascal_case Handler>] {
                 fn table_name(&self) -> &str {
                     stringify!($pascal_case)
@@ -95,7 +99,7 @@ macro_rules! define_collection {
 
         // impl HasHandler for $pascal_case
         const _: () = {
-            use crate::collections::HasHandler;
+            use $crate::collections::HasHandler;
             impl HasHandler for $pascal_case {
                 type Handler = [<$pascal_case Handler>];
             }
@@ -107,7 +111,7 @@ macro_rules! define_collection {
         // impl FromRowAlias
         const _: () = {
             use sqlx::{ColumnIndex, Decode, Row, Type};
-            use crate::from_row::{FromRowAlias, FromRowData, FromRowError, RowPostAliased, RowPreAliased, RowTwoAliased};
+            use $crate::from_row::{FromRowAlias, FromRowData, FromRowError, RowStrAliased, RowNumAliased};
 
             impl FromRowData for [<$pascal_case Handler>] {
                 type RData = $pascal_case;
@@ -131,7 +135,7 @@ macro_rules! define_collection {
                         }
                     )
                 }
-                fn pre_alias(&self, row: RowPreAliased<'r, R>) -> Result<Self::RData, FromRowError> {
+                fn str_alias(&self, row: RowStrAliased<'r, R>) -> Result<Self::RData, FromRowError> {
                     Ok(
                         $pascal_case {
                             $(
@@ -140,10 +144,7 @@ macro_rules! define_collection {
                         }
                     )
                 }
-                fn post_alias(&self, _: RowPostAliased<'r, R>) -> Result<Self::RData, FromRowError> {
-                    panic!("to depricate");
-                }
-                fn two_alias(&self, row: RowTwoAliased<'r, R>) -> Result<Self::RData, FromRowError> {
+                fn num_alias(&self, row: RowNumAliased<'r, R>) -> Result<Self::RData, FromRowError> {
                     Ok(
                         $pascal_case {
                             $(
@@ -159,7 +160,7 @@ macro_rules! define_collection {
 
         // impl gen_serde::Deserialize for $pascal_case
         const _: () = {
-            use crate::gen_serde::{Deserialize, DeserializeMap, DeserializeSpec, Deserializer, KnownKey};
+            use $crate::gen_serde::{Deserialize, DeserializeMap, DeserializeSpec, Deserializer, KnownKey};
 
             impl DeserializeSpec for $pascal_case {
                 type Handler = ();
@@ -189,7 +190,7 @@ macro_rules! define_collection {
 
         // impl gen_serde::Serialize for $pascal_case
         const _: () = {
-            use crate::gen_serde::{Serialize, ObjectEncoding};
+            use $crate::gen_serde::{Serialize, ObjectEncoding};
 
             impl<F> Serialize<F> for $pascal_case
             where
@@ -211,9 +212,10 @@ macro_rules! define_collection {
 
         // impl ExpressionsForOperation for $pascal_case
         const _: () = {
-            use crate::operations::operations_expressions_crossover::ExpressionsForOperation;
-            use crate::sqlx_query_builder::basic_expressions::{
-                AliasedScopedColumn,  ScopedColumn,
+            use $crate::operations::operations_expressions_crossover::ExpressionsForOperation;
+            use $crate::sqlx_query_builder::{
+                basic_expressions::{AliasedScopedColumn, ScopedColumn},
+                sanitize_combinator::Sanitize,
             };
 
             impl ExpressionsForOperation for [<$pascal_case Handler>] {
@@ -223,55 +225,63 @@ macro_rules! define_collection {
                     [$(stringify!($member),)*]
                 }
 
-                type Scoped = [
-                    ScopedColumn<(&'static str,), (&'static str,)> ;$size
-                ];
+                type Scoped = [ScopedColumn<&'static str, &'static str>; $size];
 
                 fn scoped(&self) -> Self::Scoped {
                     [
                         $(
                             ScopedColumn {
-                                table: (stringify!($pascal_case),),
-                                col: (stringify!($member),),
+                                table: stringify!($pascal_case),
+                                col: stringify!($member),
                             },
                         )*
                     ]
                 }
 
                 type ScopedAliased = [
-                    AliasedScopedColumn<(&'static str,), (&'static str,), (&'static str, &'static str)> ; $size
+                    AliasedScopedColumn<
+                        &'static str,
+                        &'static str,
+                        Sanitize<(&'static str, &'static str)>,
+                    >;
+                    $size
                 ];
 
                 fn scoped_aliased(&self, alias: &'static str) -> Self::ScopedAliased {
                     [
                         $(
                             AliasedScopedColumn {
-                                table: (stringify!($pascal_case),),
-                                column: (stringify!($member),),
-                                alias: (alias, stringify!($member)),
+                                table: stringify!($pascal_case),
+                                column: stringify!($member),
+                                alias: Sanitize((alias, stringify!($member))),
                             },
                         )*
                     ]
                 }
 
                 type NumScopedAliased = [
-                    AliasedScopedColumn<(&'static str,), (&'static str,), (&'static str, usize, &'static str)> ; $size
+                    AliasedScopedColumn<
+                        &'static str,
+                        &'static str,
+                        Sanitize<(&'static str, usize, &'static str)>,
+                    >;
+                    $size
                 ];
 
                 fn num_scoped_aliased(&self, num: usize, alias: &'static str) -> Self::NumScopedAliased {
                     [
                         $(
                             AliasedScopedColumn {
-                                table: (stringify!($pascal_case),),
-                                column: (stringify!($member),),
-                                alias: (alias, num, stringify!($member)),
+                                table: stringify!($pascal_case),
+                                column: stringify!($member),
+                                alias: Sanitize((alias, num, stringify!($member))),
                             },
                         )*
                     ]
                 }
             }
 
-            use crate::operations::operations_expressions_crossover::TableExpressions;
+            use $crate::operations::operations_expressions_crossover::TableExpressions;
 
             impl TableExpressions for [<$pascal_case Handler>] {
                 type SnakeCase = &'static str;
@@ -282,10 +292,8 @@ macro_rules! define_collection {
                 fn table_name_pascal_case(&self) -> Self::PascalCase {
                     stringify!($pascal_case)
                 }
-                type Migrate = ();
-                fn migrate(&self) -> Self::Migrate {
-                    todo!()
-                }
+                type InheritJoin = ();
+                fn inherit_join(&self) -> Self::InheritJoin {}
             }
 
 
@@ -293,11 +301,13 @@ macro_rules! define_collection {
 
         // impl OnInsert for $pascal_case
         const _: () = {
-            use crate::operations::operations_expressions_crossover::OnInsert;
-            use crate::operations::operations_expressions_crossover::ExpressionsForOperation;
-            use crate::sqlx_query_builder::IsOpExpression;
-            use crate::sqlx_query_builder::{ManyExpressions, StatementBuilder};
-            use crate::database_extention::DatabaseExt;
+            use $crate::sqlx_query_builder::statements::insert_statement::IteratorSpec;
+            use $crate::operations::operations_expressions_crossover::OnInsert;
+            use $crate::operations::operations_expressions_crossover::ExpressionsForOperation;
+            use $crate::sqlx_query_builder::Expression;
+            use $crate::sqlx_query_builder::OpExpression;
+            use $crate::sqlx_query_builder::{StatementBuilder};
+            use $crate::database_extention::DatabaseExt;
             use sqlx::{Encode, Type};
 
             impl OnInsert<$pascal_case> for [<$pascal_case Handler>] {
@@ -311,28 +321,38 @@ macro_rules! define_collection {
                 }
             }
 
-            impl IsOpExpression for $pascal_case {
-                fn is_op(&self) -> bool {
-                    true
+            impl OpExpression for $pascal_case {
+            }
+
+            impl<T> OnInsert<IteratorSpec<T>> for [<$pascal_case Handler>]
+            where T: IntoIterator<Item = $pascal_case>,
+            {
+                type InsertExpression = IteratorSpec<T>;
+                fn on_insert(&self, input: IteratorSpec<T>) -> Self::InsertExpression {
+                    input
+                }
+                type InsertId = [&'static str; $size];
+                fn on_insert_with_id(&self, input: IteratorSpec<T>) -> (Self::InsertId, Self::InsertExpression) {
+                    (self.identifier(), input)
                 }
             }
 
-            impl<'q, S> ManyExpressions<'q, S> for $pascal_case
+            impl<'q, S> Expression<'q, S> for $pascal_case
             where
                 S: DatabaseExt,
                 $(
                     $type: Encode<'q, S> + 'q + Type<S>,
                 )*
             {
-                fn expression(self, start: &'static str, join: &'static str, ctx: &mut StatementBuilder<'q, S>)
-                where
-                    S: DatabaseExt,
-                {
-                    ctx.syntax(start);
-
+                #[allow(unused_assignments)]
+                fn expression(self, ctx: &mut StatementBuilder<'q, S>) {
+                    let mut first = true;
                     $(
+                        if !first {
+                            ctx.syntax(", ");
+                        }
+                        first = false;
                         ctx.bind(self.$member);
-                        ctx.syntax(join);
                     )*
                 }
             }
@@ -340,11 +360,12 @@ macro_rules! define_collection {
 
         // impl OnUpdate for $pascal_case
         const _: () = {
-            use crate::operations::operations_expressions_crossover::OnUpdate;
-            use crate::update_mod::Update;
-            use crate::sqlx_query_builder::IsOpExpression;
-            use crate::sqlx_query_builder::{ManyExpressions, StatementBuilder};
-            use crate::database_extention::DatabaseExt;
+            use $crate::operations::operations_expressions_crossover::OnUpdate;
+            use $crate::update_mod::Update;
+            use $crate::sqlx_query_builder::Expression;
+            use $crate::sqlx_query_builder::OpExpression;
+            use $crate::sqlx_query_builder::{StatementBuilder};
+            use $crate::database_extention::DatabaseExt;
             use sqlx::{Encode, Type};
 
             impl OnUpdate<[<$pascal_case Partial>]> for [<$pascal_case Handler>] {
@@ -354,38 +375,31 @@ macro_rules! define_collection {
                 }
             }
 
-            impl IsOpExpression for [<$pascal_case Partial>] {
-                fn is_op(&self) -> bool {
-                    false
-                    $(
-                        ||
-                        match self.$member {
-                            Update::Set(_) => true,
-                            _ => false,
-                        }
-                    )*
+            impl OpExpression for [<$pascal_case Partial>] {
+                fn is_expression_present(&self) -> bool {
+                    false $(|| matches!(self.$member, Update::Set(_)))*
                 }
             }
 
-            impl<'q, S> ManyExpressions<'q, S> for [<$pascal_case Partial>]
+            impl<'q, S> Expression<'q, S> for [<$pascal_case Partial>]
             where
                 S: DatabaseExt,
                 $(
                     $type: Encode<'q, S> + 'q + Type<S>,
                 )*
             {
-                fn expression(self, start: &'static str, join: &'static str, ctx: &mut StatementBuilder<'q, S>)
-                where
-                    S: DatabaseExt,
-                {
-                    if self.is_op() { ctx.syntax(start); }
-
+                #[allow(unused_assignments)]
+                fn expression(self, ctx: &mut StatementBuilder<'q, S>) {
+                    let mut first = true;
                     $(
                         if let Update::Set(value) = self.$member {
+                            if !first {
+                                ctx.syntax(", ");
+                            }
+                            first = false;
                             ctx.syntax(stringify!($member));
                             ctx.syntax(" = ");
                             ctx.bind(value);
-                            ctx.syntax(join);
                         }
                     )*
                 }
@@ -394,44 +408,106 @@ macro_rules! define_collection {
 
         // members
         pub mod [<$pascal_case:snake _members>] {
-            use crate::operations::operations_expressions_crossover::ExpressionsForOperation;
-            use crate::sqlx_query_builder::basic_expressions::ScopedColumn;
-            use crate::sqlx_query_builder::basic_expressions::AliasedScopedColumn;
+            use $crate::operations::operations_expressions_crossover::ExpressionsForOperation;
+            use $crate::sqlx_query_builder::{
+                basic_expressions::{AliasedScopedColumn, ScopedColumn},
+                sanitize_combinator::Sanitize,
+            };
+            use $crate::collections::SingleColumnId;
+            use $crate::collections::CollectionId;
 
-            #[allow(non_camel_case_types)]
+            #[allow(non_camel_case_types, dead_code)]
+            #[derive(Debug, Clone)]
             pub struct id;
+
+            impl CollectionId for id {
+                type IdData = i64;
+            }
+            impl SingleColumnId for id {}
+
+            impl AsRef<str> for id {
+                fn as_ref(&self) -> &str {
+                    "id"
+                }
+            }
+
             impl ExpressionsForOperation for id {
                 type Identifier = &'static str;
                 fn identifier(&self) -> Self::Identifier {
                     "id"
                 }
-                type Scoped = ScopedColumn<(&'static str,), (&'static str,)>;
+                type Scoped = ScopedColumn<&'static str, &'static str>;
                 fn scoped(&self) -> Self::Scoped {
                     ScopedColumn {
-                        table: (stringify!($pascal_case),),
-                        col: ("id",),
+                        table: stringify!($pascal_case),
+                        col: "id",
                     }
                 }
-                type ScopedAliased = AliasedScopedColumn<(&'static str,), (&'static str,), (&'static str, &'static str)>;
+                type ScopedAliased = AliasedScopedColumn<
+                    &'static str,
+                    &'static str,
+                    Sanitize<(&'static str, &'static str)>,
+                >;
                 fn scoped_aliased(&self, alias: &'static str) -> Self::ScopedAliased {
                     AliasedScopedColumn {
-                        table: (stringify!($pascal_case),),
-                        column: ("id",),
-                        alias: (alias, "id"),
+                        table: stringify!($pascal_case),
+                        column: "id",
+                        alias: Sanitize((alias, "id")),
                     }
                 }
-                type NumScopedAliased = AliasedScopedColumn<(&'static str,), (&'static str,), (&'static str, usize, &'static str)>;
+                type NumScopedAliased = AliasedScopedColumn<
+                    &'static str,
+                    &'static str,
+                    Sanitize<(&'static str, usize, &'static str)>,
+                >;
                 fn num_scoped_aliased(&self, num: usize, alias: &'static str) -> Self::NumScopedAliased {
                     AliasedScopedColumn {
-                        table: (stringify!($pascal_case),),
-                        column: ("id",),
-                        alias: (alias, num, "id"),
+                        table: stringify!($pascal_case),
+                        column: "id",
+                        alias: Sanitize((alias, num, "id")),
                     }
                 }
             }
 
+            const _: () = {
+                use $crate::from_row::{
+                    FromRowAlias, FromRowData, FromRowError, RowStrAliased,
+                    RowNumAliased,
+                };
+                use sqlx::{ColumnIndex, Decode, Row, Type};
+
+                impl FromRowData for id {
+                    type RData = i64;
+                }
+
+                impl<'r, R> FromRowAlias<'r, R> for id
+                where
+                    R: Row + 'r,
+                    i64: Type<R::Database> + Decode<'r, R::Database>,
+                    for<'q> &'q str: ColumnIndex<R>,
+                {
+                    fn no_alias(&self, row: &'r R) -> Result<Self::RData, FromRowError> {
+                        Ok(row.try_get("id")?)
+                    }
+
+                    fn str_alias(
+                        &self,
+                        row: RowStrAliased<'r, R>,
+                    ) -> Result<Self::RData, FromRowError> {
+                        Ok(row.try_get("id")?)
+                    }
+
+                    fn num_alias(
+                        &self,
+                        row: RowNumAliased<'r, R>,
+                    ) -> Result<Self::RData, FromRowError> {
+                        Ok(row.try_get("id")?)
+                    }
+                }
+            };
+
             $(
-                #[allow(non_camel_case_types)]
+                #[allow(non_camel_case_types, dead_code)]
                 #[derive(Debug, Clone)]
                 pub struct $member;
 
@@ -442,14 +518,15 @@ macro_rules! define_collection {
                 }
 
                 impl $member {
+                    #[allow(dead_code)]
                     pub fn bind(value: $type) ->
-                    crate::operations::operations_expressions_crossover::NamedBind<
+                    $crate::operations::operations_expressions_crossover::NamedBind<
                         super::[<$pascal_case Handler>],
                         $member,
                         $type,
                     >
                     {
-                        crate::operations::operations_expressions_crossover::NamedBind {
+                        $crate::operations::operations_expressions_crossover::NamedBind {
                             table: super::[<$pascal_case Handler>],
                             name: $member,
                             value: value,
@@ -462,27 +539,35 @@ macro_rules! define_collection {
                     fn identifier(&self) -> Self::Identifier {
                         stringify!($member)
                     }
-                    type Scoped = ScopedColumn<(&'static str,), (&'static str,)>;
+                    type Scoped = ScopedColumn<&'static str, &'static str>;
                     fn scoped(&self) -> Self::Scoped {
                         ScopedColumn {
-                            table: (stringify!($pascal_case),),
-                            col: (stringify!($member),),
+                            table: stringify!($pascal_case),
+                            col: stringify!($member),
                         }
                     }
-                    type ScopedAliased = AliasedScopedColumn<(&'static str,), (&'static str,), (&'static str, &'static str)>;
+                    type ScopedAliased = AliasedScopedColumn<
+                        &'static str,
+                        &'static str,
+                        Sanitize<(&'static str, &'static str)>,
+                    >;
                     fn scoped_aliased(&self, alias: &'static str) -> Self::ScopedAliased {
                         AliasedScopedColumn {
-                            table: (stringify!($pascal_case),),
-                            column: (stringify!($member),),
-                            alias: (alias, stringify!($member)),
+                            table: stringify!($pascal_case),
+                            column: stringify!($member),
+                            alias: Sanitize((alias, stringify!($member))),
                         }
                     }
-                    type NumScopedAliased = AliasedScopedColumn<(&'static str,), (&'static str,), (&'static str, usize, &'static str)>;
+                    type NumScopedAliased = AliasedScopedColumn<
+                        &'static str,
+                        &'static str,
+                        Sanitize<(&'static str, usize, &'static str)>,
+                    >;
                     fn num_scoped_aliased(&self, num: usize, alias: &'static str) -> Self::NumScopedAliased {
                         AliasedScopedColumn {
-                            table: (stringify!($pascal_case),),
-                            column: (stringify!($member),),
-                            alias: (alias, num, stringify!($member)),
+                            table: stringify!($pascal_case),
+                            column: stringify!($member),
+                            alias: Sanitize((alias, num, stringify!($member))),
                         }
                     }
                 }
@@ -490,7 +575,7 @@ macro_rules! define_collection {
 
             $(
                 const _: () = {
-                    use crate::from_row::{FromRowData, FromRowAlias, FromRowError, RowPreAliased, RowPostAliased, RowTwoAliased};
+                    use $crate::from_row::{FromRowData, FromRowAlias, FromRowError, RowStrAliased, RowNumAliased};
                     use sqlx::{Row, Type, Decode, ColumnIndex};
 
                     impl FromRowData for $member {
@@ -506,13 +591,10 @@ macro_rules! define_collection {
                         fn no_alias(&self, row: &'r R) -> Result<Self::RData, FromRowError> {
                             Ok(row.try_get(stringify!($member))?)
                         }
-                        fn pre_alias(&self, row: RowPreAliased<'r, R>) -> Result<Self::RData, FromRowError> {
+                        fn str_alias(&self, row: RowStrAliased<'r, R>) -> Result<Self::RData, FromRowError> {
                             Ok(row.try_get(stringify!($member))?)
                         }
-                        fn post_alias(&self, row: RowPostAliased<'r, R>) -> Result<Self::RData, FromRowError> {
-                            Ok(row.try_get(stringify!($member))?)
-                        }
-                        fn two_alias(&self, row: RowTwoAliased<'r, R>) -> Result<Self::RData, FromRowError> {
+                        fn num_alias(&self, row: RowNumAliased<'r, R>) -> Result<Self::RData, FromRowError> {
                             Ok(row.try_get(stringify!($member))?)
                         }
                     }
@@ -524,6 +606,7 @@ macro_rules! define_collection {
     }};
 }
 
+#[cfg(test)]
 define_collection!(
     struct Todo 3 {
         title: String,
@@ -532,14 +615,43 @@ define_collection!(
     }
 );
 
+#[cfg(test)]
 define_collection!(
     struct Category 1 {
         title: String,
     }
 );
 
+#[cfg(test)]
 define_collection!(
     struct Tag 1 {
         title: String,
     }
 );
+
+#[cfg(test)]
+impl Link<TodoHandler> for CategoryHandler {
+    type Spec = OneToMany<DefaultRelationKey, TodoHandler, CategoryHandler>;
+
+    fn spec(self) -> Self::Spec {
+        OneToMany {
+            fk_unique_id: DefaultRelationKey,
+            from: TodoHandler,
+            to: CategoryHandler,
+        }
+    }
+}
+
+#[cfg(test)]
+#[linked_sql_macros::skip]
+impl Link<TodoHandler> for TagHandler {
+    type Spec = ManyToMany<false, DefaultRelationKey, TodoHandler, TagHandler>;
+
+    fn spec(self) -> Self::Spec {
+        ManyToMany {
+            relation_key: DefaultRelationKey,
+            from: TodoHandler,
+            to: TagHandler,
+        }
+    }
+}

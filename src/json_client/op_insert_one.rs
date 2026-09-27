@@ -3,7 +3,6 @@ use std::sync::Arc;
 use sqlx::ColumnIndex;
 
 use crate::{
-    collections::AutoGenerate,
     database_extention::DatabaseExt,
     fix_executor::ExecutorTrait,
     from_row::FromRowAlias,
@@ -12,7 +11,7 @@ use crate::{
         json_format_side::{JsonAsArcCursor, JsonFormat},
     },
     json_client::{
-        DynManyToMany, DynOptionalToMany,
+        DynManyToMany, DynOneToMany,
         client_interface::{
             InsertManyError, InsertManyInput, InsertManyItem, InsertManyOutput, InsertOneError,
             InsertOneInput, InsertOneOutput, SupportedInsertLink,
@@ -24,12 +23,12 @@ use crate::{
     links::{
         DefaultRelationKey,
         relation_many_to_many::ManyToMany,
-        relation_optional_to_many::OptionalToMany,
+        relation_one_to_many::OneToMany,
         update_links::{SetId, SetNew},
     },
     operations::{
         Operation,
-        insert_one::{InsertLinkConsumeData, InsertOne, InsertOneLink},
+        insert::{AbortOperation, InsertEntity, InsertLinkConsumeData, InsertOne, InsertOneLink},
     },
 };
 
@@ -48,7 +47,7 @@ where
     S: sqlx::Database + DatabaseExt + ExecutorTrait + Send + Sync + 'static,
     DynCollection<S>: for<'r> FromRowAlias<'r, S::Row, RData = CollectionToSerialize>,
     DynamicInsertInput<S>: for<'d> Deserialize<'d, JsonAsArcCursor, Handler = DynCollection<S>>,
-    SetId<DynOptionalToMany<S>, i64>: InsertLinkConsumeData<
+    SetId<DynOneToMany<S>, i64>: InsertLinkConsumeData<
         Link: JsonInsertOneLink<S>
                   + InsertOneLink<InsertValuesData: Send, PreOpData: Send, PostOpData: Send>,
     >,
@@ -56,7 +55,7 @@ where
         Link: JsonInsertOneLink<S>
                   + InsertOneLink<InsertValuesData: Send, PreOpData: Send, PostOpData: Send>,
     >,
-    SetNew<DynOptionalToMany<S>, DynamicInsertInput<S>>: InsertLinkConsumeData<
+    SetNew<DynOneToMany<S>, DynamicInsertInput<S>>: InsertLinkConsumeData<
         Link: JsonInsertOneLink<S>
                   + InsertOneLink<InsertValuesData: Send, PreOpData: Send, PostOpData: Send>,
     >,
@@ -86,16 +85,16 @@ where
 
                 if rel_guard.many_to_many.contains(&forward) {
                     links.push(JsonInsertOneToConsume::new(SetId {
-                        relation: ManyToMany {
+                        relation: ManyToMany::<false, _, _, _> {
                             relation_key: DefaultRelationKey,
                             from: Arc::clone(&base),
                             to,
                         },
                         id,
                     }))
-                } else if rel_guard.optional_to_many.contains(&forward) {
+                } else if rel_guard.one_to_many.contains(&forward) {
                     links.push(JsonInsertOneToConsume::new(SetId {
-                        relation: OptionalToMany {
+                        relation: OneToMany {
                             fk_unique_id: DefaultRelationKey,
                             from: Arc::clone(&base),
                             to,
@@ -118,7 +117,7 @@ where
                     deserialize(Arc::from(value.0.as_str()), Arc::clone(&to), JsonFormat)
                         .map_err(|_| InsertOneError::InvalidData)?;
                 links.push(JsonInsertOneToConsume::new(SetNew {
-                    relation: OptionalToMany {
+                    relation: OneToMany {
                         fk_unique_id: DefaultRelationKey,
                         from: Arc::clone(&base),
                         to,
@@ -131,15 +130,16 @@ where
 
     let out = Operation::<S>::exec_operation(
         InsertOne {
-            id: AutoGenerate,
-            base,
-            data,
-            links,
+            handler: base,
+            data: InsertEntity {
+                attributes: data,
+                link: links,
+            },
+            infalibility: AbortOperation,
         },
         conn,
     )
-    .await
-    .expect("bug: insert one failed");
+    .await;
 
     drop(all_gaurds);
     drop(rel_guard);
@@ -162,7 +162,7 @@ where
     S: sqlx::Database + DatabaseExt + ExecutorTrait + Send + Sync + 'static,
     DynCollection<S>: for<'r> FromRowAlias<'r, S::Row, RData = CollectionToSerialize>,
     DynamicInsertInput<S>: for<'d> Deserialize<'d, JsonAsArcCursor, Handler = DynCollection<S>>,
-    SetId<DynOptionalToMany<S>, i64>: InsertLinkConsumeData<
+    SetId<DynOneToMany<S>, i64>: InsertLinkConsumeData<
         Link: JsonInsertOneLink<S>
                   + InsertOneLink<InsertValuesData: Send, PreOpData: Send, PostOpData: Send>,
     >,
@@ -170,7 +170,7 @@ where
         Link: JsonInsertOneLink<S>
                   + InsertOneLink<InsertValuesData: Send, PreOpData: Send, PostOpData: Send>,
     >,
-    SetNew<DynOptionalToMany<S>, DynamicInsertInput<S>>: InsertLinkConsumeData<
+    SetNew<DynOneToMany<S>, DynamicInsertInput<S>>: InsertLinkConsumeData<
         Link: JsonInsertOneLink<S>
                   + InsertOneLink<InsertValuesData: Send, PreOpData: Send, PostOpData: Send>,
     >,

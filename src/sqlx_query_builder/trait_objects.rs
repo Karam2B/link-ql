@@ -1,57 +1,13 @@
 use crate::{
     database_extention::DatabaseExt,
     sqlx_query_builder::{
-        Expression, IsOpExpression, ManyExpressions, OpExpression, StatementBuilder,
+        Expression, Join, OpExpression, StatementBuilder, combinators::OptionalExpression,
     },
 };
 
-pub trait ManyBoxedExpressions<S> {
-    fn dyn_is_op(&self) -> bool;
-    fn dyn_boxed_expression<'q>(
-        self: Box<Self>,
-        start: &'static str,
-        join: &'static str,
-        ctx: &mut StatementBuilder<'q, S>,
-    ) where
-        S: DatabaseExt;
-}
-
-impl<S, T> ManyBoxedExpressions<S> for T
-where
-    T: for<'q> ManyExpressions<'q, S> + Send,
-{
-    fn dyn_is_op(&self) -> bool {
-        T::is_op(self)
-    }
-    fn dyn_boxed_expression<'q>(
-        self: Box<Self>,
-        start: &'static str,
-        join: &'static str,
-        ctx: &mut StatementBuilder<'q, S>,
-    ) where
-        S: DatabaseExt,
-    {
-        self.expression(start, join, ctx);
-    }
-}
-
-impl<S> IsOpExpression for Box<dyn ManyBoxedExpressions<S> + Send> {
-    fn is_op(&self) -> bool {
-        ManyBoxedExpressions::dyn_is_op(&**self)
-    }
-}
-
-impl<'q, S: 'q> ManyExpressions<'q, S> for Box<dyn ManyBoxedExpressions<S> + Send> {
-    fn expression(self, start: &'static str, join: &'static str, ctx: &mut StatementBuilder<'q, S>)
-    where
-        S: DatabaseExt,
-    {
-        self.dyn_boxed_expression(start, join, ctx);
-    }
-}
-
 pub trait BoxedExpression<S: DatabaseExt>: Send {
     fn boxed_expression<'q>(self: Box<Self>, ctx: &mut StatementBuilder<'q, S>);
+    fn boxed_is_op_own(&self) -> bool;
 }
 impl<E, S> BoxedExpression<S> for E
 where
@@ -61,9 +17,48 @@ where
     fn boxed_expression<'q>(self: Box<Self>, ctx: &mut StatementBuilder<'q, S>) {
         Expression::expression(*self, ctx);
     }
+
+    fn boxed_is_op_own(&self) -> bool {
+        self.is_expression_present()
+    }
 }
 
-impl<S> OpExpression for Box<dyn BoxedExpression<S> + Send> where S: DatabaseExt {}
+impl<S: DatabaseExt> BoxedExpression<S> for () {
+    fn boxed_expression<'q>(self: Box<Self>, _: &mut StatementBuilder<'q, S>) {}
+
+    fn boxed_is_op_own(&self) -> bool {
+        false
+    }
+}
+
+impl<S> OpExpression for Box<dyn BoxedExpression<S> + Send>
+where
+    S: DatabaseExt,
+{
+    fn is_expression_present(&self) -> bool {
+        BoxedExpression::boxed_is_op_own(self.as_ref())
+    }
+}
+
+pub fn box_expression<S, T>(
+    items: T,
+    separator: &'static str,
+) -> Box<dyn BoxedExpression<S> + Send>
+where
+    S: DatabaseExt,
+    T: OptionalExpression + Send + 'static,
+    Join<T>: for<'e> Expression<'e, S> + Send,
+{
+    if !items.is_oper() {
+        Box::new(())
+    } else {
+        Box::new(Join {
+            start: "",
+            separator,
+            items,
+        })
+    }
+}
 
 impl<'q, S> Expression<'q, S> for Box<dyn BoxedExpression<S> + Send>
 where

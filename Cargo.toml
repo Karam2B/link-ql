@@ -1,15 +1,26 @@
 [package]
-name = "claw-ql"
+name = "linked-sql"
 version = "0.1.0"
 edition = "2024"
+autobins = false
+
+[workspace]
+members = [".", "wasm"]
+resolver = "2"
+
+[workspace.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
 
 [dependencies]
-claw-ql-macros = { path = "./claw-ql-macros", version = "0.1.0" }
+linked-sql-macros = { path = "./linked-sql-macros", version = "0.1.0" }
 sqlx = { version = "0.8.5" }
 paste = "1.0.15"
 convert_case = "0.8.0"
 # feature trace
 tracing = { version = "0.1.40", optional = true }
+tracing-subscriber = { version = "0.3.18", optional = true }
 # feature serde
 serde = { version = "1.0.203", optional = true }
 # feature http
@@ -24,6 +35,10 @@ futures = "0.3.31"
 left-right = "0.11.7"
 oneshot = { version = "0.2.1", features = ["async"] }
 anyhow = "1.0.102"
+# feature wasm
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
 tracing-subscriber = "0.3.18"
@@ -40,20 +55,27 @@ inventory = { version = "0.3.20" }
 [package.metadata.patch]
 crates = ["sqlx", "sqlx-core", "sqlx-sqlite"]
 
+# link patched crates
 [patch.crates-io]
-sqlx = { path = './target/patch/sqlx-0.8.6' }
-sqlx-core = { path = './target/patch/sqlx-core-0.8.6' }
-sqlx-sqlite = { path = './target/patch/sqlx-sqlite-0.8.6' }
+sqlx = { path = "target/patch/sqlx-0.8.6" }
+sqlx-core = { path = "target/patch/sqlx-core-0.8.6" }
+sqlx-sqlite = { path = "target/patch/sqlx-sqlite-0.8.6" }
+
 
 [features]
-default = ["fix_executor", "sqlite", "trace", "http"]
+default = ["fix_executor", "sqlite", "trace", "http", "wasm"]
 # need to apply patches or for sqlx to change add/fix Executor trait
 fix_executor = []
 nightly_rust_specialization = []
 nightly_rust_const_impl = []
-inventory = ["dep:inventory", "claw-ql-macros/inventory"]
+inventory = ["dep:inventory", "linked-sql-macros/inventory"]
 http = ["serde", "dep:tower-service", "dep:hyper", "dep:axum", "tokio/full"]
-serde = ["dep:serde_json", "dep:serde", "claw-ql-macros/serde"]
-trace = ["dep:tracing"]
+serde = ["dep:serde_json", "dep:serde", "linked-sql-macros/serde"]
+trace = ["dep:tracing", "dep:tracing-subscriber"]
 sqlite = ["sqlx/sqlite"]
 skip_without_comments = []
+wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys"]
+
+[[example]]
+name = "todo_category_workflow"
+required-features = ["trace", "sqlite", "http", "serde"]

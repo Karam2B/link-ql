@@ -1,6 +1,6 @@
 //! Test-only tracing layer that records SQL emitted by sqlx (`target = "sqlx::query"`).
 //!
-//! [`install`] / [`install_async`] run the closure under a `track_sqlx_query` tracing span.
+//! [`install`] / [`watch_sqlx_calls`] run the closure under a `track_sqlx_query` tracing span.
 //! Only sqlx events whose span context is that tree (or a child, including sqlite worker
 //! threads) are stored in that scope's buffer.
 
@@ -133,17 +133,17 @@ where
     }
 }
 
-/// Per-scope buffer of captured sqlx SQL strings.
+/// Handle for the current test's sqlx query capture scope.
 ///
-/// In tests, call [`Cache::drain`] immediately after each `client.exec` you want to
-/// assert on. [`Cache::clear`] is for setup helpers in `test_utilities` that should
-/// discard schema/migration SQL before the test body runs.
+/// Call [`Actions::take`] immediately after each `client.exec` you want to assert on.
+/// [`Actions::clear`] is for setup helpers that should discard schema/migration SQL
+/// before the test body runs.
 #[derive(Clone)]
-pub struct Cache {
+pub struct Actions {
     queries: Arc<Mutex<Vec<String>>>,
 }
 
-impl Cache {
+impl Actions {
     /// Discard all SQL captured so far in this [`install`] / [`watch_sqlx_calls`] scope.
     pub fn clear(&self) {
         self.queries
@@ -152,30 +152,14 @@ impl Cache {
             .clear();
     }
 
-    /// Take all SQL captured since the last [`Cache::clear`] or [`Cache::drain`], and
+    /// Take all SQL captured since the last [`Actions::clear`] or [`Actions::take`], and
     /// reset the buffer.
-    pub fn drain(&self) -> Vec<String> {
-        drain_queries(Arc::clone(&self.queries))
+    pub fn take(&self) -> Vec<String> {
+        take_queries(Arc::clone(&self.queries))
     }
-}
 
-/// Drop connection setup statements that may appear once per pool connection.
-pub fn without_pragma(drain: Vec<String>) -> Vec<String> {
-    drain
-        .into_iter()
-        .filter(|statement| !statement.trim_start().starts_with("PRAGMA "))
-        .collect()
-}
-
-pub fn assert_sql_eq(actual: Vec<String>, expected: Vec<String>) {
-    pretty_assertions::assert_eq!(without_pragma(actual), without_pragma(expected));
-}
-
-/// Handle for the current test's sqlx query capture scope.
-pub struct Scope;
-
-impl Scope {
     /// Spawn a future on the Tokio runtime, inheriting the current capture span.
+    #[allow(dead_code)]
     pub fn spawn<F>(&self, fut: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
@@ -186,7 +170,22 @@ impl Scope {
     }
 }
 
-fn drain_queries(queries: Arc<Mutex<Vec<String>>>) -> Vec<String> {
+/// Drop connection setup statements that may appear once per pool connection.
+#[allow(dead_code)]
+pub fn without_pragma(statements: Vec<String>) -> Vec<String> {
+    statements
+        .into_iter()
+        .filter(|statement| !statement.trim_start().starts_with("PRAGMA "))
+        .collect()
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub fn assert_sql_eq(actual: Vec<String>, expected: Vec<String>) {
+    pretty_assertions::assert_eq!(without_pragma(actual), without_pragma(expected));
+}
+
+fn take_queries(queries: Arc<Mutex<Vec<String>>>) -> Vec<String> {
     std::mem::take(&mut *queries.lock().expect("track_sqlx_query mutex poisoned"))
 }
 
@@ -196,7 +195,7 @@ fn drain_queries(queries: Arc<Mutex<Vec<String>>>) -> Vec<String> {
 #[allow(dead_code)]
 pub fn install<F, R>(f: F) -> (Vec<String>, R)
 where
-    F: FnOnce(Scope, Cache) -> R,
+    F: FnOnce(Actions) -> R,
 {
     let _lock = CAPTURE_SCOPE_LOCK
         .lock()
@@ -204,26 +203,26 @@ where
     ensure_global_subscriber();
     let queries = Arc::new(Mutex::new(Vec::new()));
     push_pending_buffer(Arc::clone(&queries));
-    let cache = Cache {
+    let actions = Actions {
         queries: Arc::clone(&queries),
     };
 
     let span = tracing::info_span!(CAPTURE_SPAN_NAME);
     let _enter = span.enter();
-    let result = f(Scope, cache);
+    let result = f(actions);
     drop(_enter);
     let _ = take_pending_buffer();
 
-    (drain_queries(queries), result)
+    (take_queries(queries), result)
 }
 
 /// Run an async closure in an isolated sqlx-query capture scope.
 ///
-/// Assert SQL with [`Cache::drain`] inside the closure, immediately after each
+/// Assert SQL with [`Actions::take`] inside the closure, immediately after each
 /// `client.exec`. Do not rely on the return value of this function for query checks.
 pub async fn watch_sqlx_calls<F, Fut, R>(f: F) -> R
 where
-    F: FnOnce(Scope, Cache) -> Fut,
+    F: FnOnce(Actions) -> Fut,
     Fut: Future<Output = R>,
 {
     use tracing::Instrument;
@@ -234,17 +233,17 @@ where
     ensure_global_subscriber();
     let queries = Arc::new(Mutex::new(Vec::new()));
     push_pending_buffer(Arc::clone(&queries));
-    let cache = Cache {
+    let actions = Actions {
         queries: Arc::clone(&queries),
     };
 
-    let result = async move { f(Scope, cache).await }
+    let result = async move { f(actions).await }
         .instrument(tracing::info_span!(CAPTURE_SPAN_NAME))
         .await;
 
     let _ = take_pending_buffer();
 
-    let _ = drain_queries(queries);
+    let _ = take_queries(queries);
 
     result
 }

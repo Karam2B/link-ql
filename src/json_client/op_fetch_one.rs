@@ -5,12 +5,10 @@ use sqlx::ColumnIndex;
 use crate::{
     collections::Collection,
     database_extention::DatabaseExt,
-    expressions::ColumnEqual,
-    extentions::common_expressions::Scoped,
     fix_executor::ExecutorTrait,
     from_row::FromRowAlias,
     json_client::{
-        DynManyToMany, DynOptionalToMany, DynOptionalToManyInverse, DynTimestamp,
+        DynManyToMany, DynOneToMany, DynOneToManyInverse, DynTimestamp,
         client_interface::{FetchOneError, FetchOneInput, FetchOneOutput, SupportedLinkFetchOne},
         dynamic_collection::{CollectionToSerialize, DynamicCollection},
         op_fetch_one_trait_extension::JsonLinkFetchOne,
@@ -19,11 +17,15 @@ use crate::{
     },
     links::{
         DefaultRelationKey, relation_many_to_many::ManyToMany,
-        relation_optional_to_many::OptionalToMany,
-        relation_optional_to_many_inverse::OptionalToManyInverse, timestamp::Timestamp,
+        relation_one_to_many::OneToMany,
+        relation_one_to_many_inverse::OneToManyInverse, timestamp::Timestamp,
     },
-    operations::{Operation, fetch_one::FetchOne},
-    sqlx_query_builder::basic_expressions::ManyFlat,
+    operations::{Operation, fetch_one::FetchOne, operations_expressions_crossover::ExpressionsForOperation},
+    sqlx_query_builder::{
+        Bind, Join,
+        basic_expressions::ColumnEqual,
+        trait_objects::BoxedExpression,
+    },
 };
 
 type DynCollection<S> = Arc<DynamicCollection<S>>;
@@ -35,8 +37,8 @@ pub fn fetch_one<S>(
 where
     S: DatabaseExt + ExecutorTrait + Send + Sync,
     DynCollection<S>: for<'r> FromRowAlias<'r, S::Row, RData = CollectionToSerialize>,
-    DynOptionalToMany<S>: JsonLinkFetchOne<S>,
-    DynOptionalToManyInverse<S>: JsonLinkFetchOne<S>,
+    DynOneToMany<S>: JsonLinkFetchOne<S>,
+    DynOneToManyInverse<S>: JsonLinkFetchOne<S>,
     DynManyToMany<S>: JsonLinkFetchOne<S>,
     DynTimestamp<S>: JsonLinkFetchOne<S>,
     i64: sqlx::Type<S> + for<'q> sqlx::Decode<'q, S> + for<'q> sqlx::Encode<'q, S>,
@@ -61,7 +63,7 @@ where
 
         for each in input.links {
             match each {
-                SupportedLinkFetchOne::OptionalToMany { to } => {
+                SupportedLinkFetchOne::OneToMany { to } => {
                     let to_guard = cols
                         .get(to.as_str())
                         .ok_or(FetchOneError::InvalidLink)?
@@ -79,14 +81,14 @@ where
                         to: Arc::clone(&base.collection_name.snake_case),
                     };
 
-                    if rel_guard.optional_to_many.contains(&forward) {
-                        links.push(Box::new(OptionalToMany {
+                    if rel_guard.one_to_many.contains(&forward) {
+                        links.push(Box::new(OneToMany {
                             fk_unique_id: DefaultRelationKey,
                             from: Arc::clone(&base),
                             to,
                         }));
-                    } else if rel_guard.optional_to_many.contains(&reverse) {
-                        links.push(Box::new(OptionalToManyInverse {
+                    } else if rel_guard.one_to_many.contains(&reverse) {
+                        links.push(Box::new(OneToManyInverse {
                             fk_unique_id: DefaultRelationKey,
                             from: Arc::clone(&base),
                             to,
@@ -133,13 +135,16 @@ where
             }
         }
 
-        let wheres = ManyFlat((
-            ColumnEqual {
-                col: base.id().scoped(),
-                eq: input.id,
-            },
-            ManyFlat(filter_exprs),
-        ));
+        let mut wheres: Vec<Box<dyn BoxedExpression<S> + Send>> = vec![Box::new(ColumnEqual {
+            col: base.id().scoped(),
+            eq: Bind(input.id),
+        })];
+        wheres.extend(filter_exprs);
+        let wheres = Join {
+            start: "",
+            separator: " AND ",
+            items: wheres,
+        };
 
         let mut conn = this.pool.acquire().await.unwrap();
 
