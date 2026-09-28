@@ -189,6 +189,13 @@ pub struct ManyOutput<T, Next> {
     pub next_item: Option<Next>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct NextItem<Id, OrderedByFields> {
+    pub id: Id,
+    pub ordered_by_field: OrderedByFields,
+}
+
 impl<B, L, W, O, F> OperationOutput for FetchMany<B, L, W, O, F>
 where
     B: Collection,
@@ -197,7 +204,7 @@ where
 {
     type Output = ManyOutput<
         LinkedOutput<<B::Id as CollectionId>::IdData, B::OutputData, L::Output>,
-        (<B::Id as CollectionId>::IdData, O::RData),
+        NextItem<<B::Id as CollectionId>::IdData, O::RData>,
     >;
 }
 
@@ -366,7 +373,10 @@ where
                 .str_alias(RowStrAliased::new(&last, "b"))
                 .unwrap();
             let id = id.str_alias(RowStrAliased::new(&last, "i")).unwrap();
-            Some((id, next))
+            Some(NextItem {
+                id,
+                ordered_by_field: next,
+            })
         } else {
             None
         };
@@ -417,7 +427,7 @@ mod test {
         connect_in_memory::ConnectInMemory,
         operations::{
             LinkedOutput, Operation,
-            fetch_many::{FetchMany, ManyOutput},
+            fetch_many::{FetchMany, ManyOutput, NextItem},
         },
         test_module::{Todo, TodoHandler, todo_members},
         track_sqlx_query::watch_sqlx_calls,
@@ -495,7 +505,10 @@ mod test {
                             links: (),
                         },
                     ],
-                    next_item: Some((6, String::from("sixth_todo"))),
+                    next_item: Some(NextItem {
+                        id: 6,
+                        ordered_by_field: String::from("sixth_todo"),
+                    }),
                 }
             );
         })
