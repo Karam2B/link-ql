@@ -79,9 +79,9 @@ pub trait FnInfo<Input, Output> {
 }
 
 #[allow(non_camel_case_types)]
-pub struct as_last_spec<S>(pub S);
+pub struct AsLastSpec<S>(pub S);
 
-impl<M, L, S> TupleLastSpec<M, L> for as_last_spec<S>
+impl<M, L, S> TupleLastSpec<M, L> for AsLastSpec<S>
 where
     S: TupleSpec<M>,
     S: TupleSpec<L>,

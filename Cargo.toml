@@ -63,7 +63,7 @@ sqlx-sqlite = { path = "target/patch/sqlx-sqlite-0.8.6" }
 
 
 [features]
-default = ["fix_executor", "sqlite", "trace", "http", "wasm"]
+default = ["in_dev_op2", "fix_executor", "sqlite", "trace", "http", "wasm"]
 # need to apply patches or for sqlx to change add/fix Executor trait
 fix_executor = []
 nightly_rust_specialization = []
@@ -75,6 +75,7 @@ trace = ["dep:tracing", "dep:tracing-subscriber"]
 sqlite = ["sqlx/sqlite"]
 skip_without_comments = []
 wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys"]
+in_dev_op2 = []
 
 [[example]]
 name = "todo_category_workflow"

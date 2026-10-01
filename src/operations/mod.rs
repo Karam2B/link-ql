@@ -1,11 +1,15 @@
 use sqlx::Database;
 
 pub mod compose_operation;
-pub mod delete;
+// pub mod delete;
 pub mod fetch_many;
+#[cfg(not(feature = "in_dev_op2"))]
 pub mod fetch_one;
-pub mod insert;
-pub mod update;
+#[cfg(feature = "in_dev_op2")]
+#[path = "fetch_one_v2.rs"]
+pub mod fetch_one;
+// pub mod insert;
+// pub mod update;
 
 pub trait OperationOutput {
     type Output;
@@ -17,11 +21,171 @@ pub trait Operation<S>: OperationOutput<Output: Send> + Send {
         Self: Sized;
 }
 
+#[cfg(feature = "in_dev_op2")]
+pub trait StreamedOperation<S>: OperationOutput<Output: Send> + Send {
+    fn stream_operation(
+        self,
+        conn: &mut S::Connection,
+    ) -> impl futures::Stream<Item = Self::Output> + Send
+    where
+        Self: Sized,
+        S: Database;
+}
+
+#[cfg(feature = "in_dev_op2")]
+pub mod streamed_ops {
+    use std::{collections::HashMap, hash::Hash, pin::pin};
+
+    use futures::StreamExt;
+
+    use crate::operations::{Operation, OperationOutput, StreamedOperation};
+
+    pub struct OperationVec<T>(pub T);
+
+    impl<T> OperationOutput for OperationVec<T>
+    where
+        T: OperationOutput,
+    {
+        type Output = Vec<T::Output>;
+    }
+
+    impl<S, T> Operation<S> for OperationVec<T>
+    where
+        T: OperationOutput,
+        T: StreamedOperation<S>,
+    {
+        fn exec_operation(
+            self,
+            conn: &mut <S>::Connection,
+        ) -> impl Future<Output = Self::Output> + Send
+        where
+            Self: Sized,
+            S: sqlx::Database,
+        {
+            async move {
+                let mut stream = pin!(self.0.stream_operation(conn));
+                let mut output = Vec::new();
+                while let Some(item) = stream.next().await {
+                    output.push(item);
+                }
+                output
+            }
+        }
+    }
+
+    pub struct OperationHashed<T>(pub T);
+
+    impl<T, Key, Value> OperationOutput for OperationHashed<T>
+    where
+        T: OperationOutput<Output = (Key, Value)>,
+    {
+        type Output = HashMap<Key, Vec<Value>>;
+    }
+
+    impl<S, T, Key, Value> Operation<S> for OperationHashed<T>
+    where
+        T: OperationOutput<Output = (Key, Value)>,
+        T: StreamedOperation<S>,
+        Value: Send,
+        Key: Send + Eq + Hash,
+    {
+        fn exec_operation(
+            self,
+            conn: &mut <S>::Connection,
+        ) -> impl Future<Output = Self::Output> + Send
+        where
+            Self: Sized,
+            S: sqlx::Database,
+        {
+            async move {
+                let mut stream = pin!(self.0.stream_operation(conn));
+                let mut output = HashMap::new();
+                while let Some((fi, ti)) = stream.next().await {
+                    output.entry(fi).or_insert_with(|| Vec::new()).push(ti)
+                }
+                output
+            }
+        }
+    }
+
+    pub struct PanicOnFailure;
+    pub struct ResultOnFailure;
+
+    pub struct OneRecordOperation<T, Infalibility> {
+        pub operation: T,
+        pub infalibility: Infalibility,
+    }
+
+    impl<T> OperationOutput for OneRecordOperation<T, PanicOnFailure>
+    where
+        T: OperationOutput,
+    {
+        type Output = Option<T::Output>;
+    }
+
+    impl<S, T> Operation<S> for OneRecordOperation<T, PanicOnFailure>
+    where
+        T: OperationOutput,
+        T: StreamedOperation<S>,
+        S: sqlx::Database,
+    {
+        fn exec_operation(
+            self,
+            conn: &mut <S>::Connection,
+        ) -> impl Future<Output = Self::Output> + Send {
+            async move {
+                let mut stream = pin!(self.operation.stream_operation(conn));
+
+                let output = stream.next().await;
+
+                if stream.next().await.is_some() {
+                    panic!("expected only one record, but got multiple");
+                }
+
+                output
+            }
+        }
+    }
+
+    impl<T> OperationOutput for OneRecordOperation<T, ResultOnFailure>
+    where
+        T: OperationOutput,
+    {
+        type Output = Result<Option<T::Output>, ()>;
+    }
+
+    impl<S, T> Operation<S> for OneRecordOperation<T, ResultOnFailure>
+    where
+        T: OperationOutput,
+        T: StreamedOperation<S>,
+        S: sqlx::Database,
+    {
+        fn exec_operation(
+            self,
+            conn: &mut <S>::Connection,
+        ) -> impl Future<Output = Self::Output> + Send {
+            async move {
+                let mut stream = pin!(self.operation.stream_operation(conn));
+
+                let output = stream.next().await;
+
+                if stream.next().await.is_some() {
+                    return Err(());
+                }
+
+                Ok(output)
+            }
+        }
+    }
+}
+
 pub mod insert_id_mode {
     pub struct AutoGenerate;
     pub struct Manual<T>(pub T);
 }
 
+// valid_syntax would replace this module
+#[cfg(not(feature = "in_dev_op2"))]
 pub mod operations_expressions_crossover {
     pub trait ExpressionsForOperation {
         type Identifier;
@@ -398,6 +562,8 @@ impl<I, C> From<CollectionOutput<I, C>> for IdOutput<I> {
     }
 }
 
+// OneRecordOperation would deprecate this module
+#[cfg(not(feature = "in_dev_op2"))]
 pub mod by_id {
     use super::{
         Operation, OperationOutput, delete::Delete,
@@ -790,7 +956,7 @@ pub mod by_id {
 }
 
 mod gen_serde_impls {
-    use super::{LinkedOutput, ManyLinkOutput, fetch_many::ManyOutput};
+    use super::{LinkedOutput, ManyLinkOutput};
     use crate::gen_serde::{ObjectEncoding, Serialize};
 
     impl<F, I, C, L> Serialize<F> for LinkedOutput<I, C, L>
@@ -810,21 +976,6 @@ mod gen_serde_impls {
         }
     }
 
-    impl<F, T, Next> Serialize<F> for ManyOutput<T, Next>
-    where
-        F: ObjectEncoding,
-        str: Serialize<F>,
-        Vec<T>: Serialize<F>,
-        Option<Next>: Serialize<F>,
-    {
-        fn serialize(&self, ctx: &mut F) {
-            let mut object = ctx.serialize_start();
-            ctx.serialize_pair(&mut object, "items", &self.items);
-            ctx.serialize_pair(&mut object, "next_item", &self.next_item);
-            ctx.serialize_end(object);
-        }
-    }
-
     impl<F, T> Serialize<F> for ManyLinkOutput<T>
     where
         F: ObjectEncoding,
@@ -839,6 +990,8 @@ mod gen_serde_impls {
     }
 }
 
+// operations::streamed_ops::OneRecordOperation would replace this module
+#[cfg(not(feature = "in_dev_op2"))]
 pub mod on_one_record {
     use super::{Operation, OperationOutput};
 

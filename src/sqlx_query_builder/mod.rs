@@ -7,7 +7,6 @@ use crate::database_extention::DatabaseExt;
 pub mod basic_expressions;
 pub mod combinators;
 pub mod sanitize_combinator;
-pub mod valid_syntax;
 pub use basic_expressions::Bind;
 pub use combinators::{Join, Prefixed};
 pub use sanitize_combinator::Sanitize;

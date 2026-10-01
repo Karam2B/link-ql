@@ -4,12 +4,7 @@ use crate::{
     execute::Executable,
     fix_executor::ExecutorTrait,
     from_row::{FromRowAlias, FromRowData, RowStrAliased},
-    operations::{
-        LinkedOutput, Operation, OperationOutput,
-        operations_expressions_crossover::{
-            ExpressionsForOperation, SelfPrescribedInsert, TableExpressions,
-        },
-    },
+    operations::{LinkedOutput, Operation, OperationOutput},
     sqlx_query_builder::{
         Expression, Join, StatementBuilder,
         basic_expressions::{Bind, ManyColumnsLargerOrEqual},
@@ -83,11 +78,8 @@ pub use std_impls::Empty;
 
 mod std_impls {
     use super::LinkFetch;
+    use crate::from_row::{FromRowAlias, FromRowData, FromRowError};
     use crate::from_row::{RowNumAliased, RowStrAliased};
-    use crate::{
-        from_row::{FromRowAlias, FromRowData, FromRowError},
-        operations::operations_expressions_crossover::ExpressionsForOperation,
-    };
     use sqlx::Row;
 
     pub struct Empty;
@@ -134,6 +126,10 @@ mod std_impls {
         }
     }
 
+    #[cfg(not(feature = "in_dev_op2"))]
+    use crate::operations::operations_expressions_crossover::ExpressionsForOperation;
+
+    #[cfg(not(feature = "in_dev_op2"))]
     impl ExpressionsForOperation for Empty {
         type Identifier = ();
         fn identifier(&self) -> Self::Identifier {
@@ -196,6 +192,7 @@ pub struct NextItem<Id, OrderedByFields> {
     pub ordered_by_field: OrderedByFields,
 }
 
+#[cfg(not(feature = "in_dev_op2"))]
 impl<B, L, W, O, F> OperationOutput for FetchMany<B, L, W, O, F>
 where
     B: Collection,
@@ -231,6 +228,7 @@ impl<B> FirstItemTrait<B> for () {
 
 impl<T0, T1> SealedFirstItemTrait for (T0, T1) {}
 
+#[cfg(not(feature = "in_dev_op2"))]
 impl<B, First> FirstItemTrait<B> for (<B::Id as CollectionId>::IdData, First)
 where
     B: Collection<Id: ExpressionsForOperation + SingleColumnId>,
@@ -261,6 +259,7 @@ where
 
 impl<T0, T1> SealedFirstItemTrait for Option<(T0, T1)> {}
 
+#[cfg(not(feature = "in_dev_op2"))]
 impl<B, First> FirstItemTrait<B> for Option<(<B::Id as CollectionId>::IdData, First)>
 where
     (<B::Id as CollectionId>::IdData, First): FirstItemTrait<B>,
@@ -278,6 +277,7 @@ where
 }
 
 // was: `for FetchMany<Base, Links, Wheres, OrderBy, (<Base::Id as CollectionId>::IdData, First)>`
+#[cfg(not(feature = "in_dev_op2"))]
 impl<S, Base, Links, Wheres, OrderBy, First2> Operation<S>
     for FetchMany<Base, Links, Wheres, OrderBy, First2>
 where
@@ -298,10 +298,8 @@ where
     Links::Op: Operation<S>,
     Links::OpInput: Send,
     Base: Collection<OutputData: Send, Id: Send>,
-    Base: TableExpressions<
-            PascalCase: for<'q> Expression<'q, S>,
-            ScopedAliased: OptionalExpression,
-        >,
+    Base:
+        TableExpressions<PascalCase: for<'q> Expression<'q, S>, ScopedAliased: OptionalExpression>,
     for<'q> Join<Base::ScopedAliased>: Expression<'q, S>,
     Base: FromRowData<RData = Base::OutputData>,
     Base: for<'r> FromRowAlias<'r, S::Row>,
@@ -312,10 +310,8 @@ where
     Base::Id: for<'r> FromRowAlias<'r, S::Row>,
     First2: Send + FirstItemTrait<Base, WhereClause: Send + OptionalExpression>,
     for<'q> Join<<First2 as FirstItemTrait<Base>>::WhereClause>: Expression<'q, S>,
-    Base::Id: ExpressionsForOperation<
-            ScopedAliased: OptionalExpression,
-            Scoped: OptionalExpression,
-        >,
+    Base::Id:
+        ExpressionsForOperation<ScopedAliased: OptionalExpression, Scoped: OptionalExpression>,
     for<'q> Join<<Base::Id as ExpressionsForOperation>::ScopedAliased>: Expression<'q, S>,
     for<'q> Join<<Base::Id as ExpressionsForOperation>::Scoped>: Expression<'q, S>,
     Links: LinkFetch<Output: Send>,
@@ -513,5 +509,27 @@ mod test {
             );
         })
         .await;
+    }
+}
+
+mod gen_serde_impls {
+    use crate::{
+        gen_serde::{ObjectEncoding, Serialize},
+        operations::fetch_many::ManyOutput,
+    };
+
+    impl<F, T, Next> Serialize<F> for ManyOutput<T, Next>
+    where
+        F: ObjectEncoding,
+        str: Serialize<F>,
+        Vec<T>: Serialize<F>,
+        Option<Next>: Serialize<F>,
+    {
+        fn serialize(&self, ctx: &mut F) {
+            let mut object = ctx.serialize_start();
+            ctx.serialize_pair(&mut object, "items", &self.items);
+            ctx.serialize_pair(&mut object, "next_item", &self.next_item);
+            ctx.serialize_end(object);
+        }
     }
 }

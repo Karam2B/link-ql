@@ -1,3 +1,4 @@
+#![cfg_attr(feature = "in_dev_op2", allow(unused))]
 #![cfg_attr(
     feature = "nightly_rust_specialization",
     allow(incomplete_features, unstable_syntax_pre_expansion)
@@ -11,67 +12,31 @@ pub mod dyn_vec;
 pub mod execute;
 pub mod extend_sqlite;
 pub mod from_row;
+// disabled temporarily to work on compile error one by one
+#[cfg(not(feature = "in_dev_op2"))]
+pub mod json_client;
 pub mod json_value_cmp;
+// disabled temporarily to work on compile error one by one
+#[cfg(not(feature = "in_dev_op2"))]
+pub mod links;
 pub mod on_migrate;
+pub mod operations;
 pub mod row_utils;
 pub mod schema;
 pub mod singleton;
 pub mod sqlx_query_builder;
 pub mod tuple_trait;
 pub mod update_mod;
+#[cfg(feature = "in_dev_op2")]
+pub mod valid_syntax;
 pub mod macros {
     pub use linked_sql_macros::*;
 }
-
-pub mod json_client;
-pub mod links;
-pub mod operations;
 
 #[doc(hidden)]
 pub use paste as paste_crate;
 
 mod test_module;
-
-// mod v2;
-// pub use v2::*;
-
-pub mod sqlx_error_handling {
-    use sqlx::{Database, Error};
-    pub trait HandleSqlxResult {
-        type Ok;
-        #[track_caller]
-        fn unwrap_sqlx_error<S: Database>(self) -> Self::Ok;
-    }
-
-    impl<T> HandleSqlxResult for Result<T, Error> {
-        type Ok = T;
-        #[track_caller]
-        fn unwrap_sqlx_error<S: Database>(self) -> T {
-            match self {
-                Ok(ok) => return ok,
-                Err(Error::Database(e)) => {
-                    match (S::NAME, e.code().map(|e| e.to_string())) {
-                        ("SQLite", Some(code)) if code == "1" => {
-                            panic!("{e:?}, hint: run migration")
-                        }
-                        (_, _) => panic!("{e:?}"),
-                    };
-                }
-                Err(e) => match &e {
-                    Error::RowNotFound => {
-                        panic!(
-                            "internal bug: linked_sql should have cleared all sqlx error at this point: {:?}",
-                            e
-                        );
-                    }
-                    _ => {
-                        panic!("database error: {:?}", e);
-                    }
-                },
-            }
-        }
-    }
-}
 
 pub mod debug_row {
     use core::fmt;

@@ -1,3 +1,4 @@
+#[linked_sql_macros::skip]
 use crate::{
     collections::{Collection, CollectionId},
     database_extention::DatabaseExt,
@@ -22,6 +23,7 @@ pub struct FetchOne<Base, Links, Wheres> {
     pub wheres: Wheres,
 }
 
+#[linked_sql_macros::skip]
 impl<B, L, W> OperationOutput for FetchOne<B, L, W>
 where
     B: Collection,
@@ -30,6 +32,7 @@ where
     type Output = Option<LinkedOutput<<B::Id as CollectionId>::IdData, B::OutputData, L::Output>>;
 }
 
+#[linked_sql_macros::skip]
 impl<S, Base, Links, Wheres> Operation<S> for FetchOne<Base, Links, Wheres>
 where
     S: DatabaseExt,
@@ -120,6 +123,7 @@ where
     }
 }
 
+#[linked_sql_macros::skip]
 #[cfg(test)]
 mod test {
     use crate::{
