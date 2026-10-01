@@ -182,9 +182,9 @@ where
 
         let out = Operation::<S>::exec_operation(s, &mut conn).await;
 
-        let next_item = out.next_item.map(|(id, next)| CollectionOutput {
-            id,
-            attributes: cursor_attributes_from_order_by(next),
+        let next_item = out.next_item.map(|next_item| CollectionOutput {
+            id: next_item.id,
+            attributes: cursor_attributes_from_order_by(next_item.ordered_by_field),
         });
 
         drop(rel_gaurd);
