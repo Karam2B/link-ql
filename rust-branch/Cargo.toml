@@ -1,0 +1,20 @@
+[package]
+name = "rust-branch"
+version = "0.1.0"
+edition = "2021"
+description = "Automatic feature-based conditional compilation for Rust"
+license = "MIT"
+repository = "https://github.com/Karam2B/linked-ql"
+keywords = ["feature", "conditional", "compilation", "macro"]
+categories = ["development-tools", "development-tools::build-utils"]
+
+[lib]
+name = "rust_branch"
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "visit", "visit-mut", "extra-traits"] }
+
+[dev-dependencies]
+tempfile = "3.8"
